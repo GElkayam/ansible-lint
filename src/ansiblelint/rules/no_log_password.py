@@ -29,6 +29,7 @@ from ansiblelint.utils import Task, convert_to_boolean
 if TYPE_CHECKING:
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+    from ansiblelint.app import App
     from ansiblelint.config import Options
     from ansiblelint.errors import MatchError
     from ansiblelint.file_utils import Lintable
@@ -328,14 +329,16 @@ if "pytest" in sys.modules:
         results = rule_runner.run_playbook(PASSWORD_LOCK_FALSE)
         assert len(results) == 0
 
+    @pytest.mark.libyaml
     @mock.patch.dict(os.environ, {"ANSIBLE_LINT_WRITE_TMP": "1"}, clear=True)
     def test_no_log_password_transform(
         config_options: Options,
+        app: App,
     ) -> None:
         """Test transform functionality for no-log-password rule."""
         playbook = Path("examples/playbooks/transform-no-log-password.yml")
         config_options.write_list = ["all"]
-        rules = RulesCollection(options=config_options)
+        rules = RulesCollection(app=app, options=config_options)
         rules.register(NoLogPasswordsRule())
 
         config_options.lintables = [str(playbook)]

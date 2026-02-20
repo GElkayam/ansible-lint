@@ -24,16 +24,16 @@ class GalaxyVersionIncorrectRule(AnsibleLintRule):
 
     def matchplay(self, file: Lintable, data: dict[str, Any]) -> list[MatchError]:
         """Return matches found for a specific play (entry in playbook)."""
-        if file.kind != "galaxy":  # type: ignore[comparison-overlap]
+        if file.kind != "galaxy":
             return []
 
         results = []
         version = data.get("version")
-        if Version(version) < Version("1.0.0"):
+        if not version or Version(version) < Version("1.0.0"):
             results.append(
                 self.create_matcherror(
                     message="collection version should be greater than or equal to 1.0.0",
-                    lineno=version._line_number,  # noqa: SLF001
+                    data=version,
                     filename=file,
                 ),
             )
@@ -82,20 +82,22 @@ if "pytest" in sys.modules:
     from ansiblelint.rules import RulesCollection  # pylint: disable=ungrouped-imports
     from ansiblelint.runner import Runner
 
-    def test_galaxy_collection_version_positive() -> None:
+    def test_galaxy_collection_version_positive(
+        empty_rule_collection: RulesCollection,
+    ) -> None:
         """Positive test for collection version in galaxy."""
-        collection = RulesCollection()
-        collection.register(GalaxyVersionIncorrectRule())
+        empty_rule_collection.register(GalaxyVersionIncorrectRule())
         success = "examples/.collection/galaxy.yml"
-        good_runner = Runner(success, rules=collection)
+        good_runner = Runner(success, rules=empty_rule_collection)
         assert good_runner.run() == []
 
-    def test_galaxy_collection_version_negative() -> None:
+    def test_galaxy_collection_version_negative(
+        empty_rule_collection: RulesCollection,
+    ) -> None:
         """Negative test for collection version in galaxy."""
-        collection = RulesCollection()
-        collection.register(GalaxyVersionIncorrectRule())
+        empty_rule_collection.register(GalaxyVersionIncorrectRule())
         failure = "examples/meta/galaxy.yml"
-        bad_runner = Runner(failure, rules=collection)
+        bad_runner = Runner(failure, rules=empty_rule_collection)
         errs = bad_runner.run()
         assert len(errs) == 1
 

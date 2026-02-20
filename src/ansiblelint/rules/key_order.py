@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ansiblelint.constants import ANNOTATION_KEYS, LINE_NUMBER_KEY
+from ansiblelint.constants import ANNOTATION_KEYS
 from ansiblelint.errors import MatchError, RuleMatchTransformMeta
 from ansiblelint.rules import AnsibleLintRule, TransformMixin
 
@@ -60,7 +60,7 @@ class KeyOrderTMeta(RuleMatchTransformMeta):
 
     fixed: tuple[str | int, ...]
 
-    def __str__(self) -> str:
+    def __str__(self) -> str:  # pragma: no cover
         """Return string representation."""
         return f"Fixed to {self.fixed}"
 
@@ -90,8 +90,8 @@ class KeyOrderRule(AnsibleLintRule, TransformMixin):
                     f"You can improve the play key order to: {', '.join(sorted_keys)}",
                     filename=file,
                     tag=f"{self.id}[play]",
-                    lineno=data[LINE_NUMBER_KEY],
                     transform_meta=KeyOrderTMeta(fixed=tuple(sorted_keys)),
+                    data=data,
                 ),
             )
         return result
@@ -122,7 +122,7 @@ class KeyOrderRule(AnsibleLintRule, TransformMixin):
         lintable: Lintable,
         data: CommentedMap | CommentedSeq | str,
     ) -> None:
-        if not isinstance(match.transform_meta, KeyOrderTMeta):
+        if not isinstance(match.transform_meta, KeyOrderTMeta):  # pragma: no cover
             return
 
         if match.tag == f"{self.id}[play]":

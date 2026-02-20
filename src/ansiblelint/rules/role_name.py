@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from ansiblelint.constants import ROLE_IMPORT_ACTION_NAMES
 from ansiblelint.rules import AnsibleLintRule
 from ansiblelint.utils import parse_yaml_from_file
+from ansiblelint.yaml_utils import get_line_column
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,7 +60,7 @@ class RoleNames(AnsibleLintRule):
         "Role names are now limited to contain only lowercase alphanumeric "
         "characters, plus underline and start with an alpha character."
     )
-    link = "https://docs.ansible.com/ansible/devel/dev_guide/developing_collections_structure.html#roles-directory"
+    link = "https://docs.ansible.com/projects/ansible/devel/dev_guide/developing_collections_structure.html#roles-directory"
     severity = "HIGH"
     tags = ["deprecations", "metadata"]
     version_changed = "6.8.5"
@@ -80,7 +81,7 @@ class RoleNames(AnsibleLintRule):
                     self.create_matcherror(
                         f"Avoid using paths when importing roles. ({name})",
                         filename=file,
-                        lineno=task["action"].get("__line__", task["__line__"]),
+                        lineno=task.line,
                         tag=f"{self.id}[path]",
                     ),
                 )
@@ -91,6 +92,7 @@ class RoleNames(AnsibleLintRule):
 
     def matchyaml(self, file: Lintable) -> list[MatchError]:
         result: list[MatchError] = []
+        column: int | None = None
 
         if file.kind not in ("meta", "role", "playbook"):
             return result
@@ -101,21 +103,15 @@ class RoleNames(AnsibleLintRule):
                     role_name = role["role"]
                 elif isinstance(role, str):
                     role_name = role
-                else:
+                else:  # pragma: no cover
                     msg = "Role dependency has unexpected type."
                     raise TypeError(msg)
                 if "/" in role_name:
-                    lineno = 1
-                    if hasattr(role_name, "ansible_pos"):
-                        lineno = role_name.ansible_pos[  # pyright: ignore[reportAttributeAccessIssue]
-                            1
-                        ]
-
                     result.append(
                         self.create_matcherror(
                             f"Avoid using paths when importing roles. ({role_name})",
                             filename=file,
-                            lineno=lineno,
+                            data=role_name,
                             tag=f"{self.id}[path]",
                         ),
                     )
@@ -124,15 +120,15 @@ class RoleNames(AnsibleLintRule):
         if file.kind == "playbook":
             for play in file.data:
                 if "roles" in play:
-                    line = play["__line__"]
+                    line, column = get_line_column(play)
                     for role in play["roles"]:
                         role_name = None
                         if isinstance(role, dict):
-                            line = role["__line__"]
+                            line, column = get_line_column(role)
                             role_name = role["role"]
                         elif isinstance(role, str):
                             role_name = role
-                        if not isinstance(role_name, str):
+                        if not isinstance(role_name, str):  # pragma: no cover
                             msg = "Role dependency has unexpected type."
                             raise TypeError(msg)
                         if "/" in role_name:
@@ -141,6 +137,7 @@ class RoleNames(AnsibleLintRule):
                                     f"Avoid using paths when importing roles. ({role_name})",
                                     filename=file,
                                     lineno=line,
+                                    column=column,
                                     tag=f"{self.id}[path]",
                                 ),
                             )

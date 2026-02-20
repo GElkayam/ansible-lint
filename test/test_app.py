@@ -10,7 +10,7 @@ from ansiblelint.testing import run_ansible_lint
 def test_generate_ignore(tmp_path: Path) -> None:
     """Validate that --generate-ignore dumps expected ignore to the file."""
     lintable = Lintable(tmp_path / "vars.yaml")
-    lintable.content = "foo: bar\nfoo: baz\n"
+    lintable.content = "foo: 1\nbar:   baz\n"
     lintable.write(force=True)
     ignore_file = tmp_path / ".ansible-lint-ignore"
     assert not ignore_file.exists()
@@ -19,7 +19,7 @@ def test_generate_ignore(tmp_path: Path) -> None:
 
     assert ignore_file.exists()
     with ignore_file.open(encoding="utf-8") as f:
-        assert "vars.yaml yaml[key-duplicates]\n" in f.readlines()
+        assert "vars.yaml yaml[colons]\n" in f.readlines()
     # Run again and now we expect to succeed as we have an ignore file.
     result = run_ansible_lint(lintable.filename, cwd=tmp_path)
     assert result.returncode == 0
@@ -52,3 +52,26 @@ def test_with_inventory_concurrent_syntax_checks(tmp_path: Path) -> None:
         # https://github.com/ansible/ansible-lint/issues/4446.
         assert "AttributeError" not in result.stderr
         counter += 1
+
+
+def test_app_fixed_violations_coverage(tmp_path: Path) -> None:
+    """Directly test App.report_outcome to get coverage on RC.FIXED_VIOLATIONS."""
+    from ansiblelint.app import App
+    from ansiblelint.config import Options
+    from ansiblelint.runner import LintResult
+
+    options = Options()
+    options.project_dir = str(tmp_path)
+    options.cache_dir = tmp_path / ".cache"
+    options.cache_dir.mkdir()
+
+    app = App(options)
+
+    mock_file = Lintable(tmp_path / "playbook.yml", kind="playbook")
+    mock_file.updated = True
+
+    result = LintResult(files={mock_file}, matches=[])
+
+    exit_code = app.report_outcome(result)
+
+    assert exit_code == RC.FIXED_VIOLATIONS

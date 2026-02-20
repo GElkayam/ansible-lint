@@ -87,6 +87,25 @@ def test_runner_exclude_paths(default_rules_collection: RulesCollection) -> None
     assert len(matches) == 0
 
 
+def test_exclude_paths_ignores_broken_yaml(
+    default_rules_collection: RulesCollection,
+    tmp_path: Path,
+) -> None:
+    """Ensure exclude_paths prevents parsing of invalid YAML files (#4745)."""
+    broken_yaml = tmp_path / "secrets.yml"
+    broken_yaml.write_text("---\ninvalid: : : : yaml\n", encoding="utf-8")
+
+    runner = Runner(
+        broken_yaml,
+        rules=default_rules_collection,
+        exclude_paths=[str(broken_yaml)],
+    )
+
+    results = runner.run()
+
+    assert len(results) == 0
+
+
 @pytest.mark.parametrize(
     ("exclude_path"),
     (pytest.param("**/playbooks_globs/*b.yml", id="1"),),
@@ -110,7 +129,7 @@ def test_runner_exclude_globs(
     ("formatter_cls"),
     (
         pytest.param(formatters.Formatter, id="Formatter-plain"),
-        pytest.param(formatters.ParseableFormatter, id="ParseableFormatter-colored"),
+        pytest.param(formatters.PEP8Formatter, id="PEP8Formatter-colored"),
         pytest.param(formatters.QuietFormatter, id="QuietFormatter-colored"),
         pytest.param(formatters.Formatter, id="Formatter-colored"),
     ),
@@ -239,6 +258,25 @@ def test_runner_not_found(default_rules_collection: RulesCollection) -> None:
     assert len(runner.checked_files) == 1
     assert len(result) == 1
     assert result[0].tag == "load-failure[not-found]"
+
+
+def test_runner_load_failure_yaml(default_rules_collection: RulesCollection) -> None:
+    """Ensure load-failure[yaml] work as expected."""
+    checked_files: set[Lintable] = set()
+
+    filename = Path("examples/broken/load-failure-invalid.yml").resolve()
+    runner = Runner(
+        filename,
+        rules=default_rules_collection,
+        verbosity=0,
+        checked_files=checked_files,
+    )
+    result = runner.run()
+    assert len(runner.checked_files) == 1
+    assert len(result) == 1
+    assert result[0].tag == "load-failure[yaml]"
+    assert result[0].lineno == 5
+    assert result[0].column == 1
 
 
 def test_runner_tmp_file(

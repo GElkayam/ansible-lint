@@ -4,8 +4,9 @@ Customize how Ansible-lint runs against automation content to suit your needs.
 You can ignore certain rules, enable `opt-in` rules, and control various other
 settings.
 
-Ansible-lint loads configuration from a file in the current working directory or
-from a file that you specify in the command line.
+Ansible-lint loads configuration from a file in the project root directory (current
+working directory) or from a file that you specify in the command line. Executing the
+linter from the project root is required for correct file discovery and dependency resolution.
 
 Any configuration option that is passed from the command line will override
 the one specified inside the configuration file.
@@ -19,8 +20,14 @@ in your current working directory.
 
 !!! note
 
-    If Ansible-lint cannot find a configuration file in the current directory it attempts to locate it in a parent directory.
-    However Ansible-lint does not try to load configuration that is outside the git repository.
+    If Ansible-lint cannot find a configuration file in the current directory it
+    attempts to locate it in a parent directory. However, Ansible-lint does not
+    try to load configuration that is outside the git repository. **Note that
+    while the config may be found in a parent directory, the linter still
+    expects to be executed from the root of the project being linted.**
+
+    Symlinked config files are followed and resolved and this will affect
+    the how project path will be determined if not mentioned explicitly.
 
 ## Specifying configuration files
 
@@ -42,7 +49,7 @@ counterparts:
 
 ## Ignoring rules for entire files
 
-Ansible-lint will load skip rules from an `.ansible-lint-ignore` or
+Ansible-lint will load ignore rules from an `.ansible-lint-ignore` or
 `.config/ansible-lint-ignore.txt` file that should reside adjacent to the config
 file. The file format is very simple, containing the filename and the rule to be
 ignored. It also supports comments starting with `#`.
@@ -56,6 +63,15 @@ playbook.yml deprecated-module
 The file can also be created by adding `--generate-ignore` to the command line.
 Keep in mind that this will override any existing file content.
 
+By default, rules ignored here will raise a non-fatal warning in the
+output.  If you add `skip` to the line, the test will be skipped
+(see `skip_list`) and not raise any warning.
+
+```yaml title=".ansible-lint-ignore"
+playbook.yml role-name  # raises warning
+playbook2.yml role-name skip  # no warning
+```
+
 ## Pre-commit setup
 
 To use Ansible-lint with the [pre-commit] tool, add the following to the
@@ -68,8 +84,14 @@ them and it does not install them by default.
 [pre-commit.ci] is a hosted service that can run pre-commit for you
 on each change but you can also run the tool yourself using the CI of your choice.
 
+!!! warning
+
+    We only support using latest version of ansible-core when running as
+    a pre-commit hook. Still, you can bypass this by changing the
+    `additional_dependencies`.
+
 Change **rev:** to either a commit sha or tag of Ansible-lint that contains
-`.pre-commit-hooks.yaml`.
+`.pre-commit-config.yaml`.
 
 ```yaml
 ---

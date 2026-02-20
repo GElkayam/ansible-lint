@@ -1,9 +1,10 @@
 ---
+# cspell:ignore superfences
 site_name: Ansible Lint Documentation
-site_url: https://ansible.readthedocs.io/projects/lint/
+site_url: https://docs.ansible.com/projects/lint/
 repo_url: https://github.com/ansible/ansible-lint
 edit_uri: blob/main/docs/
-copyright: Copyright © 2023 Red Hat, Inc.
+copyright: Copyright © Red Hat, Inc.
 docs_dir: docs
 strict: true
 
@@ -155,8 +156,8 @@ plugins:
             docstring_style: sphinx
             merge_init_into_class: yes
             show_submodules: yes
-          import:
-            - url: https://docs.ansible.com/ansible/latest/objects.inv
+          inventories:
+            - url: https://docs.ansible.com/projects/ansible/latest/objects.inv
               domains: [py, std]
 
 markdown_extensions:

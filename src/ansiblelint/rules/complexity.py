@@ -6,10 +6,10 @@ import re
 import sys
 from typing import TYPE_CHECKING, Any
 
-from ansiblelint.constants import LINE_NUMBER_KEY
 from ansiblelint.rules import AnsibleLintRule, RulesCollection
 
 if TYPE_CHECKING:
+    from ansiblelint.app import App
     from ansiblelint.config import Options
     from ansiblelint.errors import MatchError
     from ansiblelint.file_utils import Lintable
@@ -33,16 +33,16 @@ class ComplexityRule(AnsibleLintRule):
         if file.kind != "playbook":
             return []
         tasks = data.get("tasks", [])
-        if not isinstance(self._collection, RulesCollection):
+        if not isinstance(self._collection, RulesCollection):  # pragma: no cover
             msg = "Rules cannot be run outside a rule collection."
             raise TypeError(msg)
         if len(tasks) > self._collection.options.max_tasks:
             results.append(
                 self.create_matcherror(
                     message=f"Maximum tasks allowed in a play is {self._collection.options.max_tasks}.",
-                    lineno=data[LINE_NUMBER_KEY],
                     tag=f"{self.id}[play]",
                     filename=file,
+                    data=data,
                 ),
             )
         return results
@@ -51,7 +51,7 @@ class ComplexityRule(AnsibleLintRule):
         """Check if the task is a block and count the number of items inside it."""
         results: list[MatchError] = []
 
-        if not isinstance(self._collection, RulesCollection):
+        if not isinstance(self._collection, RulesCollection):  # pragma: no cover
             msg = "Rules cannot be run outside a rule collection."
             raise TypeError(msg)
 
@@ -61,7 +61,7 @@ class ComplexityRule(AnsibleLintRule):
                 results.append(
                     self.create_matcherror(
                         message=f"Replace nested block with an include_tasks to make code easier to maintain. Maximum block depth allowed is {self._collection.options.max_block_depth}.",
-                        lineno=task[LINE_NUMBER_KEY],
+                        lineno=task.line,
                         tag=f"{self.id}[nesting]",
                         filename=file,
                     ),
@@ -70,7 +70,7 @@ class ComplexityRule(AnsibleLintRule):
 
     def calculate_block_depth(self, task: Task) -> int:
         """Recursively calculate the block depth of a task."""
-        if not isinstance(task.position, str):
+        if not isinstance(task.position, str):  # pragma: no cover
             raise NotImplementedError
         return task.position.count(".block")
 
@@ -101,11 +101,12 @@ if "pytest" in sys.modules:
         expected_results: list[str],
         monkeypatch: pytest.MonkeyPatch,
         config_options: Options,
+        app: App,
     ) -> None:
         """Test rule."""
         monkeypatch.setattr(config_options, "max_tasks", 5)
         monkeypatch.setattr(config_options, "max_block_depth", 3)
-        collection = RulesCollection(options=config_options)
+        collection = RulesCollection(app=app, options=config_options)
         collection.register(ComplexityRule())
         results = Runner(file, rules=collection).run()
 

@@ -31,10 +31,15 @@ def pytest_configure(config: pytest.Config) -> None:
     if is_help_option_present(config):
         return
     if is_master(config):
+        # linter should be able de detect and convert some deprecation warnings
+        # into validation errors but during testing we disable this to avoid
+        # unnecessary noise. Still, we might want to enable it for particular
+        # tests, for testing our ability to detect deprecations.
+        os.environ["ANSIBLE_DEPRECATION_WARNINGS"] = "False"
         # we need to be sure that we have the requirements installed as some tests
         # might depend on these. This approach is compatible with GHA caching.
         try:
-            subprocess.check_output(  # noqa: S603
+            subprocess.check_output(
                 ["./tools/install-reqs.sh"],
                 stderr=subprocess.PIPE,
                 text=True,
@@ -70,8 +75,10 @@ if not HAS_LIBYAML:
             stacklevel=1,
         )
     else:
-        pytest.fail(
-            "FATAL: For testing, we require pyyaml to be installed with its native extension, missing it would make testing 3x slower and risk missing essential bugs.",
+        warnings.warn(
+            "Some tests are skipped because when pyyaml precompile lib is missing they produce different results. This is also making testing 3x slower.",
+            category=pytest.PytestWarning,
+            stacklevel=1,
         )
 
 
@@ -79,3 +86,9 @@ if not HAS_LIBYAML:
 def fixture_project_path() -> Path:
     """Fixture to linter root folder."""
     return Path(__file__).resolve().parent
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Filters some tests if libyaml is not available."""
+    if not HAS_LIBYAML and list(item.iter_markers("libyaml")):
+        pytest.skip("skipped because libyaml is not installed")

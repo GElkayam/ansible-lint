@@ -311,7 +311,7 @@ def test_formatted_yaml_loader_dumper(
     # Running our files through yamllint, after we reformatted them,
     # should not yield any problems.
     config = ansiblelint.yaml_utils.load_yamllint_config()
-    assert not list(run_yamllint(after_content, config))
+    assert not list(run_yamllint(after_content, config))  # type: ignore[no-untyped-call]
 
 
 @pytest.fixture(name="lintable")
@@ -1035,3 +1035,27 @@ def test_document_start(
         yaml.dumps(yaml.load(_SINGLE_QUOTE_WITHOUT_INDENTS)).startswith("---")
         == explicit_start
     )
+
+
+def test_yamllint_file_config_loaded() -> None:
+    """Ensure the yamllint configuration from a file is loaded correctly."""
+    config_fixture = Path(fixtures_dir / "yamllint.yml")
+    config = ansiblelint.yaml_utils.load_yamllint_config(yamllint_file=config_fixture)
+    assert config.rules["line-length"]["max"] == 111
+
+
+def test_formatted_yaml_anchor_indentation() -> None:
+    """Verify that anchors in sequences don't cause runaway indentation (#4935)."""
+    yaml = ansiblelint.yaml_utils.FormattedYAML()
+
+    anchor_input = """---
+- &my_anchor
+  name: my_name
+- <<: *my_anchor
+  name: other_name
+"""
+    data_anchor = yaml.load(anchor_input)
+    output_anchor = yaml.dumps(data_anchor)
+
+    assert "  name: my_name" in output_anchor
+    assert "            name: my_name" not in output_anchor

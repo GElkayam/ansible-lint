@@ -26,7 +26,7 @@ import collections.abc
 import logging
 import re
 import warnings
-from collections.abc import MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from functools import cache
 from itertools import product
 from typing import TYPE_CHECKING, Any
@@ -49,14 +49,16 @@ from ansiblelint.errors import LintWarning, WarnSource
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from ansible.parsing.yaml.objects import AnsibleBaseYAMLObject
-
     from ansiblelint.file_utils import Lintable
+    from ansiblelint.types import (
+        AnsibleBaseYAMLObject,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
 
 _logger = logging.getLogger(__name__)
 _found_deprecated_tags: set[str] = set()
-_noqa_comment_re = re.compile(r"^# noqa(\s|:)")
+_noqa_comment_re = re.compile(r"^\s*# noqa(\s|:)", flags=re.MULTILINE)
+_noqa_comment_line_re = re.compile(r"^\s*# noqa(\s|:).*$")
 
 # playbook: Sequence currently expects only instances of one of the two
 # classes below but we should consider avoiding this chimera.
@@ -113,7 +115,7 @@ def append_skipped_rules(  # type: ignore[no-any-unimported]
     """
     try:
         yaml_skip = _append_skipped_rules(pyyaml_data, lintable)
-    except RuntimeError:
+    except RuntimeError:  # pragma: no cover
         # Notify user of skip error, do not stop, do not change exit code
         _logger.exception("Error trying to append skipped rules")
         return pyyaml_data
@@ -150,7 +152,7 @@ def _append_skipped_rules(  # type: ignore[no-any-unimported]
     # parse file text using 2nd parser library
     try:
         ruamel_data = load_data(lintable.content)
-    except ScannerError as exc:
+    except ScannerError as exc:  # pragma: no cover
         _logger.debug(
             "Ignored loading skipped rules from file %s due to: %s",
             lintable,
@@ -214,7 +216,7 @@ def _append_skipped_rules(  # type: ignore[no-any-unimported]
         if isinstance(pyyaml_task, str):
             continue
 
-        if pyyaml_task.get("name") != ruamel_task.get("name"):
+        if pyyaml_task.get("name") != ruamel_task.get("name"):  # pragma: no cover
             msg = "Error in matching skip comment to a task"
             raise RuntimeError(msg)
         pyyaml_task[SKIPPED_RULES_KEY] = _get_rule_skips_from_yaml(
@@ -258,6 +260,28 @@ def _get_tasks_from_blocks(task_blocks: Sequence[Any]) -> Generator[Any, None, N
         yield task
 
 
+def _continue_skip_next_lines(
+    lintable: Lintable,
+) -> None:
+    """When a line only contains a noqa comment (and possibly indentation), add the skip also to the next non-empty line."""
+    # If line starts with _noqa_comment_line_re, add next non-empty line to same lintable.line_skips
+    line_content = lintable.content.splitlines()
+    for line_no in list(lintable.line_skips.keys()):
+        if _noqa_comment_line_re.fullmatch(line_content[line_no - 1]):
+            # Find next non-empty line
+            next_line_no = line_no
+            while (
+                next_line_no < len(line_content)
+                and not line_content[next_line_no].strip()
+            ):
+                next_line_no += 1
+            if next_line_no >= len(line_content):
+                continue
+            lintable.line_skips[next_line_no + 1].update(
+                lintable.line_skips[line_no],
+            )
+
+
 def _get_rule_skips_from_yaml(
     yaml_input: Sequence[Any],
     lintable: Lintable,
@@ -269,7 +293,17 @@ def _get_rule_skips_from_yaml(
         return []
 
     def traverse_yaml(obj: Any) -> None:
-        for entry in obj.ca.items.values():
+        traversable = list(obj.ca.items.values())
+        if obj.ca.comment:
+            traversable.append(obj.ca.comment)
+        for entry in traversable:
+            # flatten all lists we might have in entries. Some arcane ruamel CommentedMap magic
+            entry = [
+                item
+                for sublist in entry
+                if sublist is not None
+                for item in (sublist if isinstance(sublist, list) else [sublist])
+            ]
             for v in entry:
                 if isinstance(v, CommentToken):
                     comment_str = v.value
@@ -299,22 +333,26 @@ def _get_rule_skips_from_yaml(
     for comment_obj_str in yaml_comment_obj_strings:
         for line in comment_obj_str.split(r"\n"):
             rule_id_list.extend(get_rule_skips_from_line(line, lintable=lintable))
+    _continue_skip_next_lines(lintable)
 
     return [normalize_tag(tag) for tag in rule_id_list]
 
 
 def normalize_tag(tag: str) -> str:
     """Return current name of tag."""
-    if tag in RENAMED_TAGS:
+    if tag in RENAMED_TAGS:  # pragma: no cover
         used_old_tags[tag] = RENAMED_TAGS[tag]
         return RENAMED_TAGS[tag]
     return tag
 
 
-def is_nested_task(task: dict[str, Any]) -> bool:
+def is_nested_task(task: Mapping[str, Any]) -> bool:
     """Check if task includes block/always/rescue."""
     # Cannot really trust the input
     if isinstance(task, str):
+        return False
+    # https://github.com/ansible/ansible-lint/issues/4492
+    if not hasattr(task, "get"):
         return False
 
     return any(task.get(key) for key in NESTED_TASK_KEYS)

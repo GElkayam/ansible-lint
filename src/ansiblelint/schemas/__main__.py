@@ -1,5 +1,6 @@
 """Module containing cached JSON schemas."""
 
+import argparse
 import json
 import logging
 import os
@@ -64,25 +65,34 @@ def refresh_schemas(min_age_seconds: int = 3600 * 24) -> int:
 
     changed = 0
     for kind, data in JSON_SCHEMAS.items():
+        try:
+            schema = get_schema(kind)
+        except OSError:
+            _logger.exception(
+                "Error getting schema %s", kind, stack_info=False, stacklevel=2
+            )
+            schema = {}
         url = data["url"]
-        if "#" in url:
+        if "#" in url:  # pragma: no cover
             msg = f"Schema URLs cannot contain # due to python-jsonschema limitation: {url}"
             raise RuntimeError(msg)
         path = Path(__file__).parent.resolve() / f"{kind}.json"
         _logger.debug("Refreshing %s schema ...", kind)
-        if not url.startswith(("http:", "https:")):
+        if not url.startswith(("http:", "https:")):  # pragma: no cover
             msg = f"Unexpected url schema: {url}"
             raise ValueError(msg)
         request = Request(url)  # noqa: S310
         etag = data.get("etag", "")
+        if not path.exists():
+            etag = ""
         if etag:
             request.add_header("If-None-Match", f'"{data.get("etag")}"')
         try:
             with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
-                if response.status == 200:
+                if response.status == 200:  # pragma: no cover
                     content = response.read().decode("utf-8").rstrip()
                     etag = response.headers["etag"].strip('"')
-                    if etag != data.get("etag", ""):
+                    if etag != data.get("etag", "") or not schema:
                         JSON_SCHEMAS[kind]["etag"] = etag
                         changed += 1
                     with path.open("w", encoding="utf-8") as f_out:
@@ -114,7 +124,12 @@ def refresh_schemas(min_age_seconds: int = 3600 * 24) -> int:
 
 
 if __name__ == "__main__":
-    if refresh_schemas(60 * 10):  # pragma: no cover
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", "-f", action="store_true")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+
+    if refresh_schemas(0 if args.force else 60 * 10):  # pragma: no cover
         print("Schemas were updated.")  # noqa: T201
         sys.exit(1)
     else:  # pragma: no cover

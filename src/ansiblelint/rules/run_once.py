@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING, Any
 
-from ansiblelint.constants import LINE_NUMBER_KEY
 from ansiblelint.rules import AnsibleLintRule
 
 if TYPE_CHECKING:
@@ -18,7 +17,7 @@ class RunOnce(AnsibleLintRule):
     """Run once should use strategy other than free."""
 
     id = "run-once"
-    link = "https://docs.ansible.com/ansible/latest/reference_appendices/playbooks_keywords.html"
+    link = "https://docs.ansible.com/projects/ansible/latest/reference_appendices/playbooks_keywords.html"
     description = "When using run_once, we should avoid using strategy as free."
 
     tags = ["idiom"]
@@ -67,7 +66,7 @@ class RunOnce(AnsibleLintRule):
                 message="Using run_once may behave differently if strategy is set to free.",
                 filename=file,
                 tag=f"{self.id}[task]",
-                lineno=task[LINE_NUMBER_KEY],
+                lineno=task.line,
             ),
         ]
 

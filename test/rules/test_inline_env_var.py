@@ -1,5 +1,6 @@
 """Tests for inline-env-var rule."""
 
+from ansiblelint.app import App
 from ansiblelint.rules import RulesCollection
 from ansiblelint.rules.inline_env_var import EnvVarsInCommandRule
 from ansiblelint.testing import RunFromText
@@ -59,6 +60,17 @@ SUCCESS_PLAY_TASKS = """
     command: echo
     args:
       strip_empty_ends: false
+
+  - name: Command with expand_argument_vars option
+    command:
+      cmd: /bin/echo $LITERAL
+      expand_argument_vars: false
+
+  - name: Mutually exclusive cmd and argv should not trigger a false-positive
+    ansible.builtin.command:
+      cmd: /bin/echo
+      argv:
+         - Hello
 """
 
 FAIL_PLAY_TASKS = """
@@ -73,19 +85,17 @@ FAIL_PLAY_TASKS = """
 """
 
 
-def test_success() -> None:
+def test_success(app: App, empty_rule_collection: RulesCollection) -> None:
     """Positive test for inline-env-var."""
-    collection = RulesCollection()
-    collection.register(EnvVarsInCommandRule())
-    runner = RunFromText(collection)
+    empty_rule_collection.register(EnvVarsInCommandRule())
+    runner = RunFromText(empty_rule_collection, app)
     results = runner.run_playbook(SUCCESS_PLAY_TASKS)
     assert len(results) == 0
 
 
-def test_fail() -> None:
+def test_fail(app: App, empty_rule_collection: RulesCollection) -> None:
     """Negative test for inline-env-var."""
-    collection = RulesCollection()
-    collection.register(EnvVarsInCommandRule())
-    runner = RunFromText(collection)
+    empty_rule_collection.register(EnvVarsInCommandRule())
+    runner = RunFromText(empty_rule_collection, app)
     results = runner.run_playbook(FAIL_PLAY_TASKS)
     assert len(results) == 2

@@ -11,19 +11,18 @@ from ansiblelint.rules.risky_shell_pipe import ShellWithoutPipefail
 from ansiblelint.text import strip_ansi_escape
 
 
-def test_profile_min() -> None:
+def test_profile_min(empty_rule_collection: RulesCollection) -> None:
     """Asserts our ability to unload rules based on profile."""
-    collection = RulesCollection()
-    assert len(collection.rules) == 4, "Unexpected number of implicit rules."
+    assert len(empty_rule_collection.rules) == 4, "Unexpected number of implicit rules."
     # register one extra rule that we know not to be part of "min" profile
 
-    collection.register(ShellWithoutPipefail())
-    assert len(collection.rules) == 5, "Failed to register new rule."
+    empty_rule_collection.register(ShellWithoutPipefail())
+    assert len(empty_rule_collection.rules) == 5, "Failed to register new rule."
 
-    filter_rules_with_profile(collection.rules, "min")
-    assert (
-        len(collection.rules) == 4
-    ), "Failed to unload rule that is not part of 'min' profile."
+    filter_rules_with_profile(empty_rule_collection.rules, "min")
+    assert len(empty_rule_collection.rules) == 4, (
+        "Failed to unload rule that is not part of 'min' profile."
+    )
 
 
 def test_profile_listing(capfd: CaptureFixture[str]) -> None:
@@ -58,6 +57,6 @@ def test_profile_listing(capfd: CaptureFixture[str]) -> None:
             continue
         err_lines.append(line)
     if all(word not in platform_name for word in ["wsl", "microsoft"]) and err_lines:
-        assert (
-            not err_lines
-        ), f"Unexpected stderr output found while running on {platform_name} platform:\n{err_lines}"
+        assert not err_lines, (
+            f"Unexpected stderr output found while running on {platform_name} platform:\n{err_lines}"
+        )

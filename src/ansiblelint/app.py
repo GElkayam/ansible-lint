@@ -7,7 +7,6 @@ import itertools
 import logging
 import os
 import sys
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +48,7 @@ class App:
 
         # Without require_module, our _set_collections_basedir may fail
         self.runtime = Runtime(
+            project_dir=Path(options.project_dir),
             isolated=True,
             require_module=True,
             verbosity=options.verbosity,
@@ -66,7 +66,7 @@ class App:
         # pylint: disable=import-outside-toplevel
         from ansiblelint.yaml_utils import load_yamllint_config
 
-        self.yamllint_config = load_yamllint_config()
+        self.yamllint_config = load_yamllint_config(options.yamllint_file)
 
     def render_matches(self, matches: list[MatchError]) -> None:
         """Display given matches (if they are not fixed)."""
@@ -104,7 +104,11 @@ class App:
                     console.print(self.formatter.apply(match))
 
         # If run under GitHub Actions we also want to emit output recognized by it.
-        if os.getenv("GITHUB_ACTIONS") == "true" and os.getenv("GITHUB_WORKFLOW"):
+        if (
+            os.getenv("GITHUB_ACTIONS") == "true"
+            and os.getenv("GITHUB_WORKFLOW")
+            and os.getenv("GITHUB_ACTIONS_TEST", "false") == "false"
+        ):
             _logger.info(
                 "GitHub Actions environment detected, adding annotations output...",
             )
@@ -163,11 +167,12 @@ class App:
         return result
 
     @staticmethod
-    def count_lintables(files: set[Lintable]) -> tuple[int, int]:
+    def count_lintables(files: set[Lintable]) -> tuple[int, int, int]:
         """Count total and modified files."""
         files_count = len(files)
+        linted_files_count = len([file for file in files if file.kind])
         changed_files_count = len([file for file in files if file.updated])
-        return files_count, changed_files_count
+        return files_count, linted_files_count, changed_files_count
 
     @staticmethod
     def _get_matched_skippable_rules(
@@ -193,12 +198,17 @@ class App:
     ) -> int:
         """Display information about how to skip found rules.
 
-        Returns exit code, 2 if errors were found, 0 when only warnings were found.
+        Returns exit code:
+          - 0: when no errors were found
+          - 2: if errors were found
+          - 8: if all errors were fixed automatically
         """
         msg = ""
 
         summary = self.count_results(result.matches)
-        files_count, changed_files_count = self.count_lintables(result.files)
+        files_count, linted_files_count, changed_files_count = self.count_lintables(
+            result.files
+        )
 
         matched_rules = self._get_matched_skippable_rules(result.matches)
 
@@ -219,7 +229,7 @@ class App:
                 ignore_file.writelines(sorted(lines))
         elif matched_rules and not self.options.quiet:
             console_stderr.print(
-                "Read [link=https://ansible.readthedocs.io/projects/lint/configuring/#ignoring-rules-for-entire-files]documentation[/link] for instructions on how to ignore specific rule violations.",
+                "Read [link=https://docs.ansible.com/projects/lint/configuring/#ignoring-rules-for-entire-files]documentation[/link] for instructions on how to ignore specific rule violations.",
             )
 
         # Do not deprecate the old tags just yet. Why? Because it is not currently feasible
@@ -249,9 +259,12 @@ class App:
             self.report_summary(
                 summary,
                 changed_files_count,
+                linted_files_count,
                 files_count,
                 is_success=mark_as_success,
             )
+        if not summary.failures and changed_files_count > 0:
+            return RC.FIXED_VIOLATIONS
         if mark_as_success:
             if not files_count:
                 # success without any file being analyzed is reported as failure
@@ -268,6 +281,7 @@ class App:
         self,
         summary: SummarizedResults,
         changed_files_count: int,
+        linted_files_count: int,
         files_count: int,
         is_success: bool,
     ) -> None:
@@ -295,7 +309,8 @@ class App:
         summary.sort()
 
         if changed_files_count:
-            console_stderr.print(f"Modified {changed_files_count} files.")
+            file_word = "file" if changed_files_count == 1 else "files"
+            console_stderr.print(f"Modified {changed_files_count} {file_word}.")
 
         # determine which profile passed
         summary.passed_profile = ""
@@ -323,7 +338,7 @@ class App:
         msg += f": {summary.failures} failure(s), {summary.warnings} warning(s)"
         if summary.fixed:
             msg += f", and fixed {summary.fixed} issue(s)"
-        msg += f" on {files_count} files."
+        msg += f" in {linted_files_count} files processed of {files_count} encountered."
 
         # Now we add some information about required and passed profile
         if self.options.profile:
@@ -362,8 +377,8 @@ def choose_formatter_factory(
         r = formatters.CodeclimateJSONFormatter
     elif options_list.format == "sarif":
         r = formatters.SarifFormatter
-    elif options_list.parseable or options_list.format == "pep8":
-        r = formatters.ParseableFormatter
+    elif options_list.format == "pep8":
+        r = formatters.PEP8Formatter
     return r
 
 
@@ -377,7 +392,6 @@ def _sanitize_list_options(tag_list: list[str]) -> list[str]:
     return sorted(set(tags))
 
 
-@lru_cache
 def get_app(*, offline: bool | None = None, cached: bool = False) -> App:
     """Return the application instance, caching the return value."""
     # Avoids ever running the app initialization twice if cached argument
@@ -422,5 +436,8 @@ def get_app(*, offline: bool | None = None, cached: bool = False) -> App:
         offline=offline,
         role_name_check=role_name_check,
     )
+
+    # Enable plugin loader now that collections are installed
+    app.runtime.enable_plugin_loader()
 
     return app

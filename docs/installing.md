@@ -35,10 +35,10 @@ automation content.
     related to the installation will be closed and locked.
 
 For a container image, we recommend using
-[creator-ee](https://github.com/ansible/creator-ee/) which includes
-`ansible-dev-tools` (it combines critical Ansible development packages into a
-unified Python package). If you have a use case that the `creator-ee` container
-doesn't satisfy, please contact the team through the
+[community-ansible-dev-tools](https://docs.ansible.com/projects/dev-tools/container/)
+which includes `ansible-dev-tools` (it combines critical Ansible development packages into
+a unified Python package). If you have a use case that the `community-ansible-dev-tools`
+container doesn't satisfy, please contact the team through the
 [discussion](https://github.com/ansible/ansible-lint/discussions) forum.
 
 You can also run Ansible-lint on your source code with the
@@ -120,6 +120,7 @@ jobs:
         with:
           args: ""
           setup_python: "true"
+          python_version: "3.14"
           working_directory: ""
           requirements_file: ""
 ```
@@ -128,6 +129,7 @@ All the arguments are optional and most users should not need them:
 
 - `args`: Arguments to be passed to ansible-lint command.
 - `setup_python`: If python should be installed. Default is `true`.
+- `python_version`: Python version to be installed. Default is `3.14`.
 - `working_directory`: The directory where to run ansible-lint from. Default is
   `github.workspace`. That might be needed if you want to lint only a subset of
   your repository.
@@ -136,13 +138,24 @@ All the arguments are optional and most users should not need them:
 
 Due to limitations on how GitHub Actions are processing arguments, we do not
 plan to provide extra options. You will have to make use of
-[ansible-lint own configuration file](https://ansible.readthedocs.io/projects/lint/configuring/)
+[ansible-lint own configuration file](https://docs.ansible.com/projects/lint/configuring/)
 to alter its behavior.
 
-To also enable [dependabot][dependabot] automatic updates, the newer versions of
-ansible-lint action you should create a file similar to
-[.github/dependabot.yml][.github/dependabot.yml]
+### Installing roles and collections from private repositories
 
-[dependabot]: https://docs.github.com/en/code-security/dependabot
-[.github/dependabot.yml]:
-  https://github.com/ansible/ansible-lint/blob/main/.github/dependabot.yml#L13-L19
+To install roles and collections from private repositories, you can:
+
+1. Create an [access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#about-personal-access-tokens)
+1. Add the token as an [deploy secret](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-a-repository)
+1. Add the following step before the ansible-lint step.
+<!-- {% raw %} -->
+```yaml
+- name: Prepare Git for Github
+  shell: bash
+  run: |
+    git config --global url."https://${{ secrets.ANSIBLE_LINT_TOKEN }}@github.com".insteadOf "https://github.com"
+
+```
+<!--
+# spell-checker:ignore endraw
+{% endraw %} -->

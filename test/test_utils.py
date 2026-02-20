@@ -28,17 +28,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from ansible.parsing.yaml.constructor import AnsibleMapping, AnsibleSequence
 from ansible.utils.sentinel import Sentinel
-from ansible_compat.runtime import Runtime
+from packaging.version import Version
 
 from ansiblelint import cli, constants, utils
 from ansiblelint.__main__ import initialize_logger
 from ansiblelint.cli import get_rules_dirs
+from ansiblelint.config import get_deps_versions
 from ansiblelint.constants import RC
 from ansiblelint.file_utils import Lintable, cwd
 from ansiblelint.runner import Runner
 from ansiblelint.testing import run_ansible_lint
+from ansiblelint.types import (  # pyright: ignore[reportAttributeAccessIssue]
+    AnsibleMapping,  # pyright: ignore[reportAttributeAccessIssue]
+    AnsibleSequence,  # pyright: ignore[reportAttributeAccessIssue]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -48,8 +52,6 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
     from ansiblelint.rules import RulesCollection
-
-runtime = Runtime(require_module=True)
 
 
 @pytest.mark.parametrize(
@@ -234,11 +236,9 @@ def test_extract_from_list() -> None:
 
 def test_extract_from_list_recursive() -> None:
     """Check that tasks get extracted from blocks if present."""
-    block = AnsibleMapping(
-        {
-            "block": [{"block": [{"name": "hello", "command": "whoami"}]}],
-        }
-    )
+    block = AnsibleMapping({
+        "block": [{"block": [{"name": "hello", "command": "whoami"}]}],
+    })
     blocks = AnsibleSequence([block])
 
     test_list = utils.extract_from_list(blocks, ["block"])
@@ -252,11 +252,12 @@ def test_extract_from_list_recursive() -> None:
     ("template", "output"),
     (
         pytest.param("{{ playbook_dir }}", "/a/b/c", id="simple"),
-        pytest.param(
-            "{{ 'hello' | doesnotexist }}",
-            "hello",  # newer implementation ignores unknown filters
-            id="unknown_filter",
-        ),
+        # Does not work the same with ansible 2.19 with data tagging
+        # pytest.param(
+        #     "{{ 'hello' | doesnotexist }}",
+        #     "hello",  # newer implementation ignores unknown filters
+        #     id="unknown_filter",
+        # ),
         pytest.param(
             "{{ hello | to_json }}",
             "{{ hello | to_json }}",
@@ -280,11 +281,100 @@ def test_template(template: str, output: str) -> None:
     assert result == output
 
 
+@pytest.mark.parametrize(
+    ("template", "has_lookup"),
+    (
+        pytest.param(
+            "{{ lookup('file', '/etc/hostname') }}",
+            True,
+            id="file_lookup",
+        ),
+        pytest.param(
+            "Welcome {{ lookup('env', 'USER', default='user') }}!",
+            True,
+            id="lookup_with_text",
+        ),
+        pytest.param(
+            "{{ query('env', 'HOME') }}",
+            True,
+            id="query_function_call",
+        ),
+        pytest.param(
+            "{{ q('env', 'HOME') }}",
+            True,
+            id="q_function_call",
+        ),
+        # query() with whitespace - should still be detected, will throw spacing errors
+        pytest.param(
+            "{{ query  ('dict', my_var) }}",
+            True,
+            id="query_function_with_whitespace",
+        ),
+        pytest.param(
+            "{{ some_function(lookup('env', 'USER')) }}",
+            True,
+            id="nested_with_function",
+        ),
+        pytest.param(
+            "{{ (query)('env', 'HOME') }}",
+            True,
+            id="query_with_parentheses",
+        ),
+        pytest.param(
+            "{{ (q)('env', 'HOME') }}",
+            True,
+            id="q_with_parentheses",
+        ),
+        pytest.param(
+            "{{ 'This string contains lookup but not a call' }}",
+            False,
+            id="lookup_in_string",
+        ),
+        pytest.param(
+            "{{ query_result }}",
+            False,
+            id="query_variable_name",
+        ),
+        pytest.param(
+            "{{ my_dict.lookup }}",
+            False,
+            id="lookup_as_attribute",
+        ),
+    ),
+)
+def test_template_lookup_behavior(template: str, has_lookup: bool) -> None:
+    """Test template behavior for both ansible-core >= 2.19 and < 2.19."""
+    # Use the lookup detection function directly
+    detected_lookup = utils.has_lookup_function_calls(template)
+    assert detected_lookup == has_lookup, (
+        f"Expected has_lookup_function_calls({template!r}) to return {has_lookup}, "
+        f"but got {detected_lookup}"
+    )
+
+    # Then test template behavior
+    result = utils.template(
+        basedir=Path("/base/dir"),
+        value=template,
+        variables={"some_var": "test_value"},
+        fail_on_error=False,
+    )
+
+    # Get ansible-core version to determine expected behavior
+    deps = get_deps_versions()
+    ansible_version = deps.get("ansible-core")
+    is_new_ansible = ansible_version and ansible_version >= Version("2.19")
+
+    if has_lookup and is_new_ansible:
+        # For ansible-core >= 2.19: lookups should be skipped (returned unchanged)
+        assert result == template, (
+            f"Expected lookup to be skipped for ansible-core >= 2.19, but got: {result}"
+        )
+
+
 def test_task_to_str_unicode() -> None:
     """Ensure that extracting messages from tasks preserves Unicode."""
     task = utils.Task({"fail": {"msg": "unicode é ô à"}}, filename="filename.yml")
-    result = utils.task_to_str(task._normalize_task())  # noqa: SLF001
-    assert result == "fail msg=unicode é ô à"
+    assert str(task) == "fail msg=unicode é ô à"
 
 
 def test_logger_debug(caplog: LogCaptureFixture) -> None:
@@ -301,6 +391,7 @@ def test_logger_debug(caplog: LogCaptureFixture) -> None:
     assert expected_info in caplog.record_tuples
 
 
+@pytest.mark.libyaml
 def test_cli_auto_detect(capfd: CaptureFixture[str]) -> None:
     """Test that run without arguments it will detect and lint the entire repository."""
     cmd = [
@@ -310,7 +401,7 @@ def test_cli_auto_detect(capfd: CaptureFixture[str]) -> None:
         "-x",
         "schema",  # exclude schema as our test file would fail it
         "-v",
-        "-p",
+        "--format=pep8",
         "--nocolor",
         "--offline",
         "--exclude=examples",
@@ -327,7 +418,10 @@ def test_cli_auto_detect(capfd: CaptureFixture[str]) -> None:
     out, err = capfd.readouterr()
 
     # An expected rule match from our examples
-    assert "playbook.yml:6: name[casing]" in out
+    assert any(
+        x in out
+        for x in ("playbook.yml:6: name[casing]", "playbook.yml:6:13: name[casing]")
+    )
     # assures that our ansible-lint config exclude was effective in excluding github files
     assert "Identified: .github/" not in out
     # assures that we can parse playbooks as playbooks
@@ -337,7 +431,11 @@ def test_cli_auto_detect(capfd: CaptureFixture[str]) -> None:
 
 def test_is_playbook() -> None:
     """Verify that we can detect a playbook as a playbook."""
-    assert utils.is_playbook("examples/playbooks/always-run-success.yml")
+    assert utils.is_playbook(filename="examples/playbooks/always-run-success.yml")
+    assert utils.is_playbook(
+        filename="examples/playbooks/import-failed-syntax-check.yml"
+    )
+    assert utils.is_playbook(filename="examples/playbooks/import_playbook_fqcn.yml")
 
 
 @pytest.mark.parametrize(
@@ -537,3 +635,69 @@ def test_import_playbook_children_subdirs() -> None:
         "Failed to find local.testcollection.test.bar.foo playbook."
         not in result.stderr
     )
+
+
+def test_import_role_children_subdirs() -> None:
+    """Verify import_playbook_children()."""
+    result = run_ansible_lint(
+        Path("playbooks/import_role_fqcn.yml"),
+        cwd=Path(__file__).resolve().parent.parent / "examples",
+        env={
+            "ANSIBLE_COLLECTIONS_PATH": "../collections",
+        },
+    )
+    assert "Failed " not in result.stderr
+
+
+def test_include_children_climbing(tmp_path: Path) -> None:
+    """Verify that include_children climbs to find tasks in a tasks/ directory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    tasks_dir = project / "tasks"
+    tasks_dir.mkdir()
+
+    site_yml = project / "site.yml"
+    site_yml.write_text("- import_tasks: imported_task.yml", encoding="utf-8")
+
+    imported_task = tasks_dir / "imported_task.yml"
+    imported_task.write_text("- debug: msg=hello", encoding="utf-8")
+
+    from ansiblelint.app import App
+    from ansiblelint.config import options as lint_options
+    from ansiblelint.rules import RulesCollection
+
+    app = App(options=lint_options)
+    rules = RulesCollection(app=app)
+    handler = utils.HandleChildren(rules=rules, app=app)
+
+    with cwd(project):
+        lintable = Lintable(site_yml)
+        children = handler.include_children(
+            lintable, k="import_tasks", v="imported_task.yml", parent_type="tasks"
+        )
+
+        assert len(children) == 1
+        assert children[0].path.resolve() == imported_task.resolve()
+
+
+def test_get_task_handler_children_climbing(tmp_path: Path) -> None:
+    """Verify that task handler resolution climbs to find tasks in a tasks/ directory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    tasks_dir = project / "tasks"
+    tasks_dir.mkdir()
+
+    imported_task = tasks_dir / "imported_task.yml"
+    imported_task.write_text("- debug: msg=hello", encoding="utf-8")
+
+    task_handler = {"import_tasks": "imported_task.yml"}
+
+    with cwd(project):
+        child = utils._get_task_handler_children_for_tasks_or_playbooks(  # noqa: SLF001
+            task_handler=task_handler,
+            basedir=str(project),
+            k="import_tasks",
+            parent_type="tasks",
+        )
+
+        assert child.path.resolve() == imported_task.resolve()

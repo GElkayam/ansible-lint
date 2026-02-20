@@ -103,12 +103,12 @@ class BaseRule:
             for method in [self.matchlines, self.matchtasks, self.matchyaml]:
                 try:
                     matches.extend(method(file))
-                except Exception as exc:  # pylint: disable=broad-except # noqa: BLE001
+                except Exception as exc:  # pylint: disable=broad-except
                     _logger.warning(
                         "Ignored exception from %s.%s while processing %s: %s",
                         self.__class__.__name__,
                         method.__name__,
-                        str(file),
+                        file,
                         exc,
                     )
                     _logger.debug("Ignored exception details", exc_info=True)
@@ -149,10 +149,6 @@ class BaseRule:
         """Return matches for lintable folders."""
         return []
 
-    def verbose(self) -> str:
-        """Return a verbose representation of the rule."""
-        return self.id + ": " + self.shortdesc + "\n  " + self.description
-
     def match(self, line: str) -> bool | str:
         """Confirm if current rule matches the given string."""
         return False
@@ -161,7 +157,7 @@ class BaseRule:
         """Enable us to sort rules by their id."""
         return (self._order, self.id) < (other._order, other.id)
 
-    def __repr__(self) -> str:
+    def __repr__(self) -> str:  # pragma: no cover
         """Return a AnsibleLintRule instance representation."""
         return self.id + ": " + self.shortdesc
 
@@ -179,7 +175,7 @@ class BaseRule:
         rule_config = {}
         if self.options:
             rule_config = self.options.rules.get(self.id, {})
-        if not isinstance(rule_config, dict):  # pragma: no branch
+        if not isinstance(rule_config, dict):  # pragma: no cover
             msg = f"Invalid rule config for {self.id}: {rule_config}"
             raise RuntimeError(msg)  # noqa: TRY004
         return rule_config
@@ -187,7 +183,10 @@ class BaseRule:
     @property
     def options(self) -> Options | None:
         """Used to access linter configuration."""
-        if self._collection is None:
+        if self.unloadable:
+            # internal rules are not configurable
+            return None
+        if self._collection is None:  # pragma: no cover
             msg = f"A rule ({self.id}) that is not part of a collection cannot access its configuration."
             _logger.warning(msg)
             return None

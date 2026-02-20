@@ -57,7 +57,7 @@ from ansiblelint.config import (
     log_entries,
     options,
 )
-from ansiblelint.loaders import load_ignore_txt
+from ansiblelint.loaders import IgnoreRule, IgnoreRuleQualifier, load_ignore_txt
 from ansiblelint.output import (
     console,
     console_stderr,
@@ -136,23 +136,32 @@ def initialize_options(arguments: list[str] | None = None) -> BaseFileLock | Non
     options.warn_list = [normalize_tag(tag) for tag in options.warn_list]
 
     options.configured = True
-    options.cache_dir = get_cache_dir(pathlib.Path(options.project_dir))
+    if not (
+        options.version
+        or options.list_profiles
+        or options.list_rules
+        or options.list_tags
+    ):
+        options.cache_dir = get_cache_dir(pathlib.Path(options.project_dir))
+
+    options.project_dir = Path(options.project_dir).resolve().as_posix()
 
     # add a lock file so we do not have two instances running inside at the same time
     if options.cache_dir:
         options.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    if not options.offline:  # pragma: no cover
-        cache_dir_lock = FileLock(
-            f"{options.cache_dir}/.lock",
-        )
-        try:
-            cache_dir_lock.acquire(timeout=180)
-        except Timeout:  # pragma: no cover
-            _logger.error(  # noqa: TRY400
-                "Timeout waiting for another instance of ansible-lint to release the lock.",
+        # lock file can only be used if cache_dir is set and writable
+        if not options.offline:  # pragma: no cover
+            cache_dir_lock = FileLock(
+                f"{options.cache_dir}/.lock",
             )
-            sys.exit(RC.LOCK_TIMEOUT)
+            try:
+                cache_dir_lock.acquire(timeout=180)
+            except Timeout:  # pragma: no cover
+                _logger.error(  # noqa: TRY400
+                    "Timeout waiting for another instance of ansible-lint to release the lock.",
+                )
+                sys.exit(RC.LOCK_TIMEOUT)
 
     # Avoid extra output noise from Ansible about using devel versions
     if "ANSIBLE_DEVEL_WARNING" not in os.environ:  # pragma: no branch
@@ -218,18 +227,20 @@ def fix(runtime_options: Options, result: LintResult, rules: RulesCollection) ->
 
     # pylint: enable=import-outside-toplevel
 
-    if Version(ruamel_safe_version) > Version(ruamel_yaml_version_str):
+    if Version(ruamel_safe_version) > Version(
+        ruamel_yaml_version_str
+    ):  # pragma: no cover
         _logger.warning(
             "We detected use of `--fix` feature with a buggy ruamel-yaml %s library instead of >=%s, upgrade it before reporting any bugs like dropped comments.",
             ruamel_yaml_version_str,
             ruamel_safe_version,
         )
-    acceptable_tags = {"all", "none", *rules.known_tags()}
+    acceptable_tags = {"all", "none", *rules.known_transform_tags()}
     unknown_tags = set(options.write_list).difference(acceptable_tags)
 
-    if unknown_tags:
+    if unknown_tags:  # pragma: no cover
         _logger.error(
-            "Found invalid value(s) (%s) for --fix arguments, must be one of: %s",
+            "Found invalid value(s) (%s) for --fix arguments, must be one of: %s. Valid values are limited by the configured profile.",
             ", ".join(unknown_tags),
             ", ".join(acceptable_tags),
         )
@@ -270,17 +281,35 @@ def fix(runtime_options: Options, result: LintResult, rules: RulesCollection) ->
         result.matches.pop(idx)
 
 
+# By default, matches ignored in .ansible-lint-ignore are treated
+# as warnings [1].  If the user explicitly adds a skip qualifier
+# to the rule, it is treated as skipped here and does not show up
+# even as a warning.
+# [1] https://github.com/ansible/ansible-lint/issues/3068
+def _rule_is_skipped(tag: str, rules: set[IgnoreRule]) -> bool:
+    for rule in rules:
+        if tag != rule.rule:
+            return False
+        return IgnoreRuleQualifier.SKIP in rule.qualifiers
+    return False
+
+
 # pylint: disable=too-many-locals,too-many-statements
 def main(argv: list[str] | None = None) -> int:
     """Linter CLI entry point."""
+    must_exit = False
     # alter PATH if needed (venv support)
     path_inject(argv[0] if argv and argv[0] else "")
 
     if argv is None:  # pragma: no cover
         argv = sys.argv
 
+    warnings.simplefilter(
+        "ignore", ResourceWarning
+    )  # suppress "enable tracemalloc to get the object allocation traceback"
     with warnings.catch_warnings(record=True) as warns:
-        warnings.simplefilter(action="ignore")
+        # do not use "ignore" as we will miss to collect them
+        warnings.simplefilter(action="default")
 
         cache_dir_lock = initialize_options(argv[1:])
 
@@ -294,10 +323,10 @@ def main(argv: list[str] | None = None) -> int:
             msg += "[/]"
             console.print(msg)
             msg = get_version_warning()
-            if msg:
+            if msg:  # pragma: no cover
                 console.print(msg)
             support_banner()
-            sys.exit(0)
+            must_exit = True
         else:
             support_banner()
 
@@ -307,9 +336,12 @@ def main(argv: list[str] | None = None) -> int:
         _logger.debug("Options: %s", options)
         _logger.debug("CWD: %s", Path.cwd())
 
-    for warn in warns:
+    for warn in warns:  # pragma: no cover
         _logger.warning(str(warn.message))
     warnings.resetwarnings()
+
+    if must_exit:
+        sys.exit(0)
     # checks if we have `ANSIBLE_LINT_SKIP_SCHEMA_UPDATE` set to bypass schema
     # update. Also skip if in offline mode.
     # env var set to skip schema refresh
@@ -326,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         or options.nodeps
     )
 
-    if not skip_schema_update:
+    if not skip_schema_update:  # pragma: no cover
         # pylint: disable=import-outside-toplevel
         from ansiblelint.schemas.__main__ import refresh_schemas
 
@@ -346,9 +378,9 @@ def main(argv: list[str] | None = None) -> int:
         cached=True,
     )  # to be sure we use the offline value from settings
     rules = RulesCollection(
-        options.rulesdirs,
-        profile_name=options.profile,
         app=app,
+        rulesdirs=options.rulesdirs,
+        profile_name=options.profile,
         options=options,
     )
 
@@ -366,21 +398,28 @@ def main(argv: list[str] | None = None) -> int:
 
     # Remove skip_list items from the result
     result.matches = [m for m in result.matches if m.tag not in app.options.skip_list]
-    # Mark matches as ignored inside ignore file
+    # load ignore file
     ignore_map = load_ignore_txt(options.ignore_file)
+    # prune qualified skips from ignore file
+    result.matches = [
+        m for m in result.matches if not _rule_is_skipped(m.tag, ignore_map[m.filename])
+    ]
+    # others entries are ignored
     for match in result.matches:
-        if match.tag in ignore_map[match.filename]:
+        if match.tag in [
+            i.rule for i in ignore_map[match.filename]
+        ]:  # pragma: no cover
             match.ignored = True
             _logger.debug("Ignored: %s", match)
 
-    if app.yamllint_config.incompatible:
+    if app.yamllint_config.incompatible:  # pragma: no cover
         _logger.log(
             level=logging.ERROR if options.write_list else logging.WARNING,
             msg=app.yamllint_config.incompatible,
         )
 
     if options.write_list:
-        if app.yamllint_config.incompatible:
+        if app.yamllint_config.incompatible:  # pragma: no cover
             sys.exit(RC.INVALID_CONFIG)
         fix(runtime_options=options, result=result, rules=rules)
 
@@ -446,16 +485,16 @@ def path_inject(own_location: str = "") -> None:
         str(userbase_bin_path) not in paths
         and (userbase_bin_path / "bin" / "ansible").exists()
     ):
-        inject_paths.append(str(userbase_bin_path))
+        inject_paths.append(userbase_bin_path.resolve().as_posix())
 
-    py_path = Path(sys.executable).parent
+    py_path = Path(sys.executable).parent.resolve()
     pipx_path = os.environ.get("PIPX_HOME", "pipx")
     if (
         str(py_path) not in paths
         and (py_path / "ansible").exists()
         and pipx_path not in str(py_path)
     ):
-        inject_paths.append(str(py_path))
+        inject_paths.append(py_path.as_posix())
 
     # last option, if nothing else is found, just look next to ourselves...
     if own_location:
@@ -465,7 +504,10 @@ def path_inject(own_location: str = "") -> None:
             inject_paths.append(str(parent))
 
     if not os.environ.get("PYENV_VIRTUAL_ENV", None):
-        if inject_paths and not all("pipx" in p for p in inject_paths):
+        if inject_paths and not any((
+            all("pipx" in p for p in inject_paths),
+            all("uv/tools" in p for p in inject_paths),
+        )):
             print(  # noqa: T201
                 f"WARNING: PATH altered to include {', '.join(inject_paths)} :: This is usually a sign of broken local setup, which can cause unexpected behaviors.",
                 file=sys.stderr,
@@ -477,7 +519,7 @@ def path_inject(own_location: str = "") -> None:
     # functioning or that is in fact the same version that was installed as
     # our dependency, but addressing this would be done by ansible-compat.
     for cmd in ("ansible",):
-        if not shutil.which(cmd):
+        if not shutil.which(cmd):  # pragma: no cover
             msg = f"Failed to find runtime dependency '{cmd}' in PATH"
             raise RuntimeError(msg)
 

@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pathspec
 import wcmatch.pathlib
-import wcmatch.wcmatch
 from yaml.error import YAMLError
 
 from ansiblelint.app import get_app
@@ -135,9 +134,17 @@ def kind_from_path(path: Path, *, base: bool = False) -> FileType:
     When called with base=True, it will return the base file type instead
     of the explicit one. That is expected to return 'yaml' for any yaml files.
     """
-    # pathlib.Path.match patterns are very limited, they do not support *a*.yml
-    # glob.glob supports **/foo.yml but not multiple extensions
-    pathex = wcmatch.pathlib.PurePath(str(path.absolute().resolve()))
+    # We attempt to use a relative path to the project root for glob matching.
+    # This prevents parent directory names (like 'tasks') from triggering
+    # false positives in kind discovery. See #4763.
+    try:
+        project_root, _ = find_project_root([str(path)])
+        # .resolve() ensures we handle symlinks and double-dots correctly
+        rel_path = path.resolve().relative_to(project_root.resolve())
+        pathex = wcmatch.pathlib.PurePath(str(rel_path))
+    except (ValueError, RuntimeError):
+        # Fallback to absolute if the file is outside the project root or can't be found
+        pathex = wcmatch.pathlib.PurePath(str(path.absolute().resolve()))
     kinds = options.kinds if not base else BASE_KINDS
     for entry in kinds:
         for k, v in entry.items():
@@ -168,6 +175,10 @@ def kind_from_path(path: Path, *, base: bool = False) -> FileType:
 
     if str(path) == "/dev/stdin":
         return "playbook"
+
+    if path.name == "pattern.json":
+        # This is a pattern file
+        return "pattern"
 
     # Unknown file types report a empty string (evaluated as False)
     return ""
@@ -407,7 +418,8 @@ class Lintable:
     def failed(self) -> bool:
         """Return true if we already found syntax-check errors on this file."""
         return any(
-            match.rule.id in ("syntax-check", "load-failure") for match in self.matches
+            match.rule.id in ("syntax-check", "load-failure", "internal-error")
+            for match in self.matches
         )
 
     @property
@@ -435,10 +447,11 @@ class Lintable:
                         from ansiblelint.skip_utils import append_skipped_rules
 
                     # pylint: disable=possibly-used-before-assignment
-                    self.state = append_skipped_rules(
-                        self.state,
-                        self,
-                    )
+                    if self.state:
+                        self.state = append_skipped_rules(
+                            self.state,
+                            self,
+                        )
                 else:
                     _logger.debug(
                         "data set to None for %s due to being '%s' (%s) kind.",
@@ -584,6 +597,7 @@ def get_all_files(
         pathspecs = [
             pathspec.GitIgnoreSpec.from_lines(
                 [
+                    ".ansible",
                     ".git",
                     ".tox",
                     ".mypy_cache",
@@ -610,7 +624,7 @@ def get_all_files(
         else:
             for item in sorted(path.iterdir()):
                 if is_excluded(item):
-                    _logger.info("Excluded: %s", item)
+                    _logger.debug("Excluded: %s", item)
                     continue
                 if item.is_file():
                     all_files.append(item)

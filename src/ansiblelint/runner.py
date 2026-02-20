@@ -21,11 +21,12 @@ from typing import TYPE_CHECKING, Any
 
 from ansible.errors import AnsibleError
 from ansible.parsing.splitter import split_args
-from ansible.parsing.yaml.constructor import AnsibleMapping
 from ansible.plugins.loader import add_all_plugin_dirs
 from ansible_compat.runtime import AnsibleWarning
+from ruamel.yaml.parser import ParserError as RuamelParserError
+from yaml.parser import ParserError
+from yaml.scanner import ScannerError
 
-import ansiblelint.skip_utils
 import ansiblelint.utils
 from ansiblelint.constants import States
 from ansiblelint.errors import LintWarning, MatchError, WarnSource
@@ -38,6 +39,10 @@ from ansiblelint.file_utils import (
 from ansiblelint.logger import timed_info
 from ansiblelint.rules.syntax_check import OUTPUT_PATTERNS
 from ansiblelint.text import strip_ansi_escape
+from ansiblelint.types import (  # pyright: ignore[reportAttributeAccessIssue]
+    AnsibleJSON,
+    AnsibleMapping,  # pyright: ignore[reportAttributeAccessIssue]
+)
 from ansiblelint.utils import (
     PLAYBOOK_DIR,
     HandleChildren,
@@ -171,7 +176,7 @@ class Runner:
                 # For the moment we are ignoring deprecation warnings as Ansible
                 # modules outside current content can generate them and user
                 # might not be able to do anything about them.
-                if warn.category is DeprecationWarning:
+                if warn.category is DeprecationWarning:  # pragma: no cover
                     continue
                 if warn.category is LintWarning:
                     if isinstance(warn.source, WarnSource):
@@ -199,7 +204,7 @@ class Runner:
                     warn.category.__name__,
                     warn.message,
                 )
-        return matches
+        return sorted(matches)
 
     def _run(self) -> list[MatchError]:
         """Run the linting (inner loop)."""
@@ -208,19 +213,57 @@ class Runner:
 
         # remove exclusions
         for lintable in self.lintables.copy():
+            # 1. Standard exclusion check
             if self.is_excluded(lintable):
                 _logger.debug("Excluded %s", lintable)
                 self.lintables.remove(lintable)
                 continue
+
+            # 2. Handle load errors (This is where SOPS/Broken YAML crashes)
             if isinstance(lintable.data, States) and lintable.exc:
+                # --- NEW LOGIC FOR #4745 ---
+                # Even if it's 'explicit', if it's broken, we check the exclude_paths
+                # one last time before reporting a 'load-failure'.
+                abs_path = str(lintable.abspath)
+                if any(
+                    abs_path.startswith(p) or fnmatch(abs_path, p)
+                    for p in self.exclude_paths
+                ):
+                    self.lintables.remove(lintable)
+                    continue
+                # --- END NEW LOGIC ---
+
+                line = 1
+                column = None
+                detail = ""
+                sub_tag = ""
                 lintable.exc.__class__.__name__.lower()
+                message = None
+                if lintable.exc.__cause__ and isinstance(
+                    lintable.exc.__cause__,
+                    ScannerError | ParserError | RuamelParserError,
+                ):
+                    sub_tag = "yaml"
+                    if isinstance(lintable.exc.args, tuple):
+                        message = lintable.exc.args[0]
+                    detail = (
+                        str(lintable.exc.__cause__.problem)
+                        if lintable.exc.__cause__.problem
+                        else ""
+                    )
+                    if lintable.exc.__cause__.problem_mark:
+                        line = lintable.exc.__cause__.problem_mark.line + 1
+                        column = lintable.exc.__cause__.problem_mark.column + 1
+
                 matches.append(
                     MatchError(
                         lintable=lintable,
-                        message=str(lintable.exc),
-                        details=str(lintable.exc.__cause__),
+                        message=message or str(lintable.exc),
+                        details=detail or str(lintable.exc.__cause__),
                         rule=self.rules["load-failure"],
-                        tag=f"load-failure[{lintable.exc.__class__.__name__.lower()}]",
+                        lineno=line,
+                        column=column,
+                        tag=f"load-failure[{sub_tag or lintable.exc.__class__.__name__.lower()}]",
                     ),
                 )
                 lintable.stop_processing = True
@@ -237,7 +280,6 @@ class Runner:
 
         # -- phase 1 : syntax check in parallel --
         if not self.skip_ansible_syntax_check:
-            # app = get_app(cached=True)
 
             def worker(lintable: Lintable) -> list[MatchError]:
                 return self._get_ansible_syntax_check_matches(
@@ -247,7 +289,7 @@ class Runner:
 
             for lintable in self.lintables:
                 if (
-                    lintable.kind not in ("playbook", "role")
+                    lintable.kind not in ("playbook", "role", "pattern")
                     or lintable.stop_processing
                 ):
                     continue
@@ -270,13 +312,28 @@ class Runner:
         # do our processing only when ansible syntax check passed in order
         # to avoid causing runtime exceptions. Our processing is not as
         # resilient to be able process garbage.
-        matches.extend(self._emit_matches(files))
-
+        matches.extend(
+            self._emit_matches([file for file in files if not file.failed()])
+        )
+        # mark failed failed lintables as stop processing in order to avoid
+        # duplicated errors from further processing of the other rules
+        for match in matches:
+            if match.lintable.failed():
+                match.lintable.stop_processing = True
+                # Look into making lintables singletons to avoid having to update them
+                for lintable in self.lintables:
+                    if lintable == match.lintable:
+                        lintable.stop_processing = True
+                        break
         # remove duplicates from files list
-        files = [value for n, value in enumerate(files) if value not in files[:n]]
-
+        files = list(dict.fromkeys(files))
         for file in self.lintables:
-            if file in self.checked_files or not file.kind or file.failed():
+            if (
+                file in self.checked_files
+                or not file.kind
+                or file.failed()
+                or file.stop_processing
+            ):
                 continue
             _logger.debug(
                 "Examining %s of type %s",
@@ -296,7 +353,7 @@ class Runner:
 
         return sorted(set(matches))
 
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-statements
     def _get_ansible_syntax_check_matches(
         self,
         lintable: Lintable,
@@ -328,7 +385,6 @@ class Runner:
     - ansible.builtin.import_role:
         name: {lintable.path.expanduser()!s}
 """
-                # pylint: disable=consider-using-with
                 fh = tempfile.NamedTemporaryFile(  # noqa: SIM115
                     mode="w",
                     suffix=".yml",
@@ -346,6 +402,9 @@ class Runner:
             cmd = [
                 "ansible-playbook",
                 "--syntax-check",
+                "-vv",  # needed or ansible-core will fail to mention the loaded file with includes:
+                # statically imported: /foo/bar/malformed.yml
+                # ERROR! A malformed block was encountered while loading a block. ..."
                 playbook_path,
             ]
             if app.options.extra_vars:
@@ -381,7 +440,7 @@ class Runner:
             stdout = strip_ansi_escape(run.stdout)
             if stderr:
                 details = stderr
-                if stdout:
+                if stdout:  # pragma: no cover
                     details += "\n" + stdout
             else:
                 details = stdout
@@ -397,6 +456,7 @@ class Runner:
 
                     if (
                         "filename" in groups
+                        and groups["filename"]
                         and str(lintable.path.absolute()) != groups["filename"]
                         and lintable.filename != groups["filename"]
                     ):
@@ -433,6 +493,7 @@ class Runner:
                     f"Unexpected error code {run.returncode} from "
                     f"execution of: {' '.join(cmd)}"
                 )
+                filename.failed()
                 results.append(
                     MatchError(
                         message=message,
@@ -462,6 +523,8 @@ class Runner:
         while visited != self.lintables:
             for lintable in self.lintables - visited:
                 visited.add(lintable)
+                if lintable.failed():
+                    continue
                 if not lintable.path.exists():
                     continue
                 try:
@@ -484,11 +547,12 @@ class Runner:
 
     def find_children(self, lintable: Lintable) -> list[Lintable]:
         """Traverse children of a single file or folder."""
+        playbook_ds: AnsibleJSON
         if not lintable.path.exists():
             return []
         playbook_dir = str(lintable.path.parent)
         ansiblelint.utils.set_collections_basedir(lintable.path.parent)
-        add_all_plugin_dirs(playbook_dir or ".")
+        add_all_plugin_dirs(playbook_dir or ".")  # type: ignore[no-untyped-call]
         if lintable.kind == "role":
             playbook_ds = AnsibleMapping({"roles": [{"role": str(lintable.path)}]})
         elif lintable.kind == "plugin":
@@ -499,9 +563,9 @@ class Runner:
             try:
                 playbook_ds = ansiblelint.utils.parse_yaml_from_file(str(lintable.path))
             except AnsibleError as exc:
-                msg = f"Loading {lintable.filename} caused an {type(exc).__name__} exception: {exc}, file was ignored."
-                _logger.exception(msg)
-                return []
+                raise MatchError(
+                    lintable=lintable, rule=self.rules["load-failure"]
+                ) from exc
         results = []
         # playbook_ds can be an AnsibleUnicode string, which we consider invalid
         if isinstance(playbook_ds, str):
@@ -522,7 +586,7 @@ class Runner:
                 # Repair incorrect paths obtained when old syntax was used, like:
                 # - include: simpletask.yml tags=nginx
                 valid_tokens = []
-                for token in split_args(path_str):
+                for token in split_args(path_str):  # type: ignore[no-untyped-call]
                     if "=" in token:
                         break
                     valid_tokens.append(token)
@@ -566,7 +630,7 @@ class Runner:
             "ansible.builtin.import_tasks": handlers.include_children,
         }
         (k, v) = item
-        add_all_plugin_dirs(str(basedir.resolve()))
+        add_all_plugin_dirs(str(basedir.resolve()))  # type: ignore[no-untyped-call]
 
         if k in delegate_map and v:
             v = template(
@@ -629,14 +693,14 @@ def threads() -> int:
     if os.path.exists(cpu_max_fname):
         # cgroup v2
         # https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
-        with open(cpu_max_fname, encoding="utf-8") as fh:
+        with open(cpu_max_fname, encoding="utf-8") as fh:  # pragma: no cover
             cpu_quota_us, cpu_period_us = fh.read().strip().split()
     elif os.path.exists(cfs_quota_fname) and os.path.exists(cfs_period_fname):
         # cgroup v1
         # https://www.kernel.org/doc/html/latest/scheduler/sched-bwc.html#management
-        with open(cfs_quota_fname, encoding="utf-8") as fh:
+        with open(cfs_quota_fname, encoding="utf-8") as fh:  # pragma: no cover
             cpu_quota_us = fh.read().strip()
-        with open(cfs_period_fname, encoding="utf-8") as fh:
+        with open(cfs_period_fname, encoding="utf-8") as fh:  # pragma: no cover
             cpu_period_us = fh.read().strip()
     else:
         # No Cgroup CPU bandwidth limit (e.g. non-Linux platform)

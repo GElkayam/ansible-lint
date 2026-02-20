@@ -1,5 +1,6 @@
 """Utility helpers to simplify working with yaml-based data."""
 
+# cspell: ignore docinfo
 # pylint: disable=too-many-lines
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import functools
 import logging
 import os
 import re
+from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
 from re import Pattern
@@ -16,6 +18,7 @@ import ruamel.yaml.events
 from ruamel.yaml.comments import CommentedMap, CommentedSeq, Format
 from ruamel.yaml.composer import ComposerError
 from ruamel.yaml.constructor import RoundTripConstructor
+from ruamel.yaml.docinfo import Version
 from ruamel.yaml.emitter import Emitter, ScalarAnalysis
 
 # Module 'ruamel.yaml' does not explicitly export attribute 'YAML'; implicit reexport disabled
@@ -27,10 +30,19 @@ from yamllint.config import YamlLintConfig
 
 from ansiblelint.constants import (
     ANNOTATION_KEYS,
+    LINE_NUMBER_KEY,
     NESTED_TASK_KEYS,
     PLAYBOOK_TASK_KEYWORDS,
 )
 from ansiblelint.utils import Task
+
+try:  # ansible 2.19 + data tagging
+    # cspell: ignore datatag
+    from ansible._internal._datatag._tags import (  # pyright: ignore[reportMissingImports]
+        Origin,
+    )
+except ImportError:  # pragma: no cover
+    Origin = None  # type: ignore[misc,assignment]
 
 if TYPE_CHECKING:
     # noinspection PyProtectedMember
@@ -46,7 +58,7 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
-class CustomYamlLintConfig(YamlLintConfig):  # type: ignore[misc,no-any-unimported]
+class CustomYamlLintConfig(YamlLintConfig):
     """Extension of YamlLintConfig."""
 
     def __init__(
@@ -55,7 +67,7 @@ class CustomYamlLintConfig(YamlLintConfig):  # type: ignore[misc,no-any-unimport
         file: str | Path | None = None,
     ) -> None:
         """Initialize config."""
-        super().__init__(content, file)
+        super().__init__(content=content, file=file)  # type: ignore[no-untyped-call]
         self.incompatible = ""
 
 
@@ -74,19 +86,25 @@ def deannotate(data: Any) -> Any:
     return data
 
 
-def load_yamllint_config() -> CustomYamlLintConfig:
+def load_yamllint_config(yamllint_file: Path | None = None) -> CustomYamlLintConfig:
     """Load our default yamllint config and any customized override file."""
     config = CustomYamlLintConfig(file=Path(__file__).parent / "data" / ".yamllint")
     config.incompatible = ""
-    # if we detect local yamllint config we use it but raise a warning
+    # Declare local yamllint config file locations.
+    # If we detect local yamllint config we use it but raise a warning
     # as this is likely to get out of sync with our internal config.
-    for path in [
+    yamllint_config_locations = [
         ".yamllint",
         ".yamllint.yaml",
         ".yamllint.yml",
         os.getenv("YAMLLINT_CONFIG_FILE", ""),
         os.getenv("XDG_CONFIG_HOME", "~/.config") + "/yamllint/config",
-    ]:
+    ]
+    if yamllint_file:
+        # Ensure the CLI option yamllint_file config is the first
+        # file to be loaded
+        yamllint_config_locations.insert(0, str(yamllint_file))
+    for path in yamllint_config_locations:
         file = Path(path).expanduser()
         if file.is_file():
             _logger.debug(
@@ -95,7 +113,7 @@ def load_yamllint_config() -> CustomYamlLintConfig:
                 file,
             )
             custom_config = CustomYamlLintConfig(file=str(file))
-            custom_config.extend(config)
+            custom_config.extend(config)  # type: ignore[no-untyped-call]
             config = custom_config
             break
 
@@ -150,7 +168,7 @@ def load_yamllint_config() -> CustomYamlLintConfig:
             errors.append(msg)
     if errors:
         nl = "\n"
-        msg = f"Found incompatible custom yamllint configuration ({file}), please either remove the file or edit it to comply with:{nl}  - {(nl + '  - ').join(errors)}.{nl}{nl}Read https://ansible.readthedocs.io/projects/lint/rules/yaml/ for more details regarding why we have these requirements. Fix mode will not be available."
+        msg = f"Found incompatible custom yamllint configuration ({file}), please either remove the file or edit it to comply with:{nl}  - {(nl + '  - ').join(errors)}.{nl}{nl}Read https://docs.ansible.com/projects/lint/rules/yaml/ for more details regarding why we have these requirements. Fix mode will not be available."
         config.incompatible = msg
 
     _logger.debug("Effective yamllint rules used: %s", config.rules)
@@ -158,7 +176,7 @@ def load_yamllint_config() -> CustomYamlLintConfig:
 
 
 def nested_items_path(
-    data_collection: dict[Any, Any] | list[Any],
+    data_collection: Mapping[Any, Any] | list[Any],
     ignored_keys: Sequence[str] = (),
 ) -> Iterator[tuple[Any, Any, list[str | int]]]:
     """Iterate a nested data structure, yielding key/index, value, and parent_path.
@@ -218,9 +236,9 @@ def nested_items_path(
     """
     # As typing and mypy cannot effectively ensure we are called only with
     # valid data, we better ignore NoneType
-    if data_collection is None:
+    if data_collection is None:  # pragma: no cover
         return
-    data: dict[Any, Any] | list[Any]
+    data: Mapping[Any, Any] | list[Any]
     if isinstance(data_collection, Task):
         data = data_collection.normalized_task
     else:
@@ -233,7 +251,7 @@ def nested_items_path(
 
 
 def _nested_items_path(
-    data_collection: dict[Any, Any] | list[Any],
+    data_collection: Mapping[Any, Any] | list[Any],
     parent_path: list[str | int],
     ignored_keys: Sequence[str] = (),
 ) -> Iterator[tuple[Any, Any, list[str | int]]]:
@@ -246,7 +264,7 @@ def _nested_items_path(
     # we have to cast each convert_to_tuples assignment or mypy complains
     # that both assignments (for dict and list) do not have the same type
     # convert_to_tuples_type = Callable[[], Iterator[tuple[str | int, Any]]]
-    if isinstance(data_collection, dict):
+    if isinstance(data_collection, Mapping):
         convert_data_collection_to_tuples = cast(
             "Callable[[], Iterator[tuple[str | int, Any]]]",
             functools.partial(data_collection.items),
@@ -284,9 +302,12 @@ def get_path_to_play(
     lc: LineCol  # lc uses 0-based counts
     # lineno is 1-based. Convert to 0-based.
     line_index = lineno - 1
+    if line_index == 0:
+        return []
 
     prev_play_line_index = ruamel_data.lc.line
     last_play_index = len(ruamel_data)
+    play_index = None
     for play_index, play in enumerate(ruamel_data):
         next_play_index = play_index + 1
         if last_play_index > next_play_index:
@@ -295,7 +316,7 @@ def get_path_to_play(
             next_play_line_index = None
 
         lc = play.lc
-        if not isinstance(lc.line, int):
+        if not isinstance(lc.line, int):  # pragma: no cover
             msg = f"expected lc.line to be an int, got {lc.line!r}"
             raise TypeError(msg)
         if lc.line == line_index:
@@ -306,13 +327,15 @@ def get_path_to_play(
         # so, handle the last play separately.
         if (
             next_play_index == last_play_index
-            and line_index > lc.line
+            and line_index <= lc.line
             and (next_play_line_index is None or line_index < next_play_line_index)
         ):
             # part of this (last) play
             return [play_index]
         prev_play_line_index = play.lc.line
-    return []
+    if play_index is None:
+        return []
+    return [play_index]
 
 
 def get_path_to_task(
@@ -325,7 +348,7 @@ def get_path_to_task(
         msg = f"expected lineno >= 1, got {lineno}"
         raise ValueError(msg)
     if lintable.kind in ("tasks", "handlers", "playbook"):
-        if not isinstance(ruamel_data, CommentedSeq):
+        if not isinstance(ruamel_data, CommentedSeq):  # pragma: no cover
             msg = f"expected ruamel_data to be a CommentedSeq, got {ruamel_data!r}"
             raise ValueError(msg)
         if lintable.kind in ("tasks", "handlers"):
@@ -432,7 +455,7 @@ def _get_path_to_task_in_tasks_block(
                 task_path: list[str | int] = [task_index]
                 return task_path + list(subtask_path)
 
-        if not isinstance(task.lc.line, int):
+        if not isinstance(task.lc.line, int):  # pragma: no cover
             msg = f"expected task.lc.line to be an int, got {task.lc.line!r}"
             raise TypeError(msg)
         if task.lc.line == line_index:
@@ -469,7 +492,7 @@ def _get_path_to_task_in_nested_tasks_block(
         nested_task_block = task[task_key]
         if task_key not in nested_task_keys or not nested_task_block:
             continue
-        next_task_key = task_keys_by_index.get(task_index + 1, None)
+        next_task_key = task_keys_by_index.get(task_index + 1)
         if next_task_key is not None:
             if task.lc.data[next_task_key][2] < lineno:
                 continue
@@ -519,7 +542,7 @@ class OctalIntYAML11(ScalarInt):
         return representer.insert_underscore(
             "0",
             v,
-            data._underscore,  # noqa: SLF001
+            data._underscore,
             anchor=anchor,
         )
 
@@ -547,7 +570,7 @@ class CustomConstructor(RoundTripConstructor):
                 underscore = [len(v) - v.rindex("_") - 1, False, False]  # type: Any
             except ValueError:
                 underscore = None
-            except IndexError:
+            except IndexError:  # pragma: no cover
                 underscore = None
             value_s = value_su.replace("_", "")
             if value_s[0] in "+-":
@@ -681,7 +704,10 @@ class FormattedEmitter(Emitter):
         super().increase_indent(flow, sequence, indentless)
         # If our previous node was a sequence and we are still trying to indent, don't
         if self.indents.last_seq():
-            self.indent = self.column + 1
+            if self.event and getattr(self.event, "anchor", None):
+                self.indent = self.best_sequence_indent - self.sequence_dash_offset
+            else:
+                self.indent = self.column + 1
 
     def write_indicator(
         self,
@@ -733,7 +759,7 @@ class FormattedEmitter(Emitter):
                 string = string.replace("#", "\uff03#\ufe5f")
                 # this is safe even if this sequence is present
                 # because it gets reversed in post-processing
-        except (ValueError, TypeError):
+        except (ValueError, TypeError):  # pragma: no cover
             # probably not really a string. Whatever.
             pass
         return string
@@ -801,6 +827,11 @@ class FormattedEmitter(Emitter):
         else:
             # single blank lines in post comments
             value = self._re_repeat_blank_lines.sub("\n\n", value)
+
+        # make sure that comments have a space after #
+        if value.startswith("#") and not value.startswith("# ") and value[1:].strip():
+            value = "# " + value[1:]
+
         comment.value = value
 
         # make sure that the eol comment only has one space before it.
@@ -899,7 +930,7 @@ class FormattedYAML(YAML):
                 - name: Task
         """
         if version:
-            if isinstance(version, str):
+            if isinstance(version, str):  # pragma: no cover
                 x, y = version.split(".", maxsplit=1)
                 version = (int(x), int(y))
             self._yaml_version_default: tuple[int, int] = version
@@ -989,7 +1020,7 @@ class FormattedYAML(YAML):
                 # one of: bool, "whatever", "consistent"
                 # so, we use True for "whatever" and "consistent"
                 config["indent_sequences"] = bool(indent_sequences)
-            elif rule == "quoted-strings":
+            elif rule == "quoted-strings":  # pragma: no cover
                 quote_type = rule_config["quote-type"]
                 # one of: single, double, any
                 if quote_type == "single":
@@ -1013,7 +1044,7 @@ class FormattedYAML(YAML):
         return None
 
     @version.setter
-    def version(self, val: tuple[int, int] | None) -> None:
+    def version(self, val: str | tuple[int, int] | list[int] | Version | None) -> None:
         """Ensure that yaml version uses our default value.
 
         The yaml Reader updates this value based on the ``%YAML`` directive in files.
@@ -1021,14 +1052,22 @@ class FormattedYAML(YAML):
         But, None effectively resets the parsing version to YAML 1.2 (ruamel's default).
         """
         if val is not None:
-            self._yaml_version = val
+            if isinstance(val, tuple):
+                self._yaml_version = val
+            elif isinstance(val, list):
+                self._yaml_version = (val[0], val[1])
+            elif isinstance(val, Version):
+                self._yaml_version = (val.major, val.minor)
+            else:
+                msg = f"Unsupported argument {val}"
+                raise TypeError(msg)
         elif hasattr(self, "_yaml_version_default"):
             self._yaml_version = self._yaml_version_default
         # We do nothing if the object did not have a previous default version defined
 
     def load(self, stream: Path | Any) -> Any:
         """Load YAML content from a string while avoiding known ruamel.yaml issues."""
-        if not isinstance(stream, str):
+        if not isinstance(stream, str):  # pragma: no cover
             msg = f"expected a str but got {type(stream)}"
             raise NotImplementedError(msg)
         # As ruamel drops comments for any document that is not a mapping or sequence,
@@ -1260,3 +1299,27 @@ def clean_json(
         # neither a dict nor a list, do nothing
         pass
     return obj
+
+
+def get_line_column(data: object, default_line: int = 1) -> tuple[int, int | None]:
+    """Return the line and column of the given data.
+
+    Args:
+        data: Object for which to introspect line number.
+        default_line: fallback default line number to return if no line number is found.
+    """
+    line = 0
+    column = None
+    if isinstance(data, Mapping) and LINE_NUMBER_KEY in data:
+        line = int(data[LINE_NUMBER_KEY])
+    if not line:
+        # ansible 2.19+
+        if Origin:  # type: ignore[truthy-function]  # pragma: no cover
+            tag = Origin.get_tag(data)
+            line = tag.line_num  # type: ignore[union-attr,assignment]
+            column = tag.col_num  # type: ignore[union-attr]
+        else:  # pre-ansible 2.19
+            if hasattr(data, "ansible_pos"):  # AnsibleUnicode object
+                _, line, column = data.ansible_pos  # pyright: ignore[reportAttributeAccessIssue]
+
+    return (line or default_line, column)

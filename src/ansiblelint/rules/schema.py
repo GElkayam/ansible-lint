@@ -14,6 +14,9 @@ from ansiblelint.schemas.main import validate_file_schema
 from ansiblelint.text import has_jinja
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
+    from ansiblelint.app import App
     from ansiblelint.config import Options
     from ansiblelint.errors import MatchError
     from ansiblelint.utils import Task
@@ -60,7 +63,7 @@ class ValidateSchemaRule(AnsibleLintRule):
     id = "schema"
     severity = "VERY_HIGH"
     tags = ["core"]
-    version_changed = "6.1.0"
+    version_changed = "25.9.0"
     _ids = {
         "schema[ansible-lint-config]": "",
         "schema[ansible-navigator-config]": "",
@@ -71,6 +74,7 @@ class ValidateSchemaRule(AnsibleLintRule):
         "schema[meta]": "",
         "schema[meta-runtime]": "",
         "schema[molecule]": "",
+        "schema[play-argspec]": "",
         "schema[playbook]": "",
         "schema[requirements]": "",
         "schema[role-arg-spec]": "",
@@ -109,11 +113,12 @@ class ValidateSchemaRule(AnsibleLintRule):
 
     def _get_field_matches(
         self,
-        file: Lintable,
-        data: dict[str, Any],
+        file: Lintable | None,
+        data: MutableMapping[str, Any],
     ) -> list[MatchError]:
         """Retrieve all matches related to fields for the given data block."""
         results = []
+        kind = "tasks" if not file else file.kind
         for key, values in self.field_checks.items():
             if key in data:
                 plugin_value = data[key]
@@ -122,10 +127,10 @@ class ValidateSchemaRule(AnsibleLintRule):
                     results.append(
                         self.create_matcherror(
                             message=msg,
-                            lineno=data.get("__line__", 1),
+                            data=plugin_value,
                             filename=file,
                             details=ValidateSchemaRule.description,
-                            tag=f"schema[{file.kind}]",
+                            tag=f"schema[{kind}]",
                         ),
                     )
         return results
@@ -139,7 +144,7 @@ class ValidateSchemaRule(AnsibleLintRule):
         if not file:
             file = Lintable("", kind="tasks")
 
-        if file.failed():
+        if file and file.failed():
             return results
 
         results.extend(self._get_field_matches(file=file, data=task.raw_task))
@@ -364,6 +369,20 @@ if "pytest" in sys.modules:
                 ],
                 id="playbook2",
             ),
+            pytest.param(
+                "examples/play_argspecs/correct_play_argspec/patterns/example_pattern/playbooks/site.meta.yml",
+                "play-argspec",
+                [],
+                id="play_argspec_positive",
+            ),
+            pytest.param(
+                "examples/play_argspecs/incorrect_play_argspec/site.meta.yaml",
+                "play-argspec",
+                [
+                    r"\$.argument_specs.weather_check 'options' is a required property.",
+                ],
+                id="play_argspec_negative",
+            ),
         ),
     )
     def test_schema(
@@ -371,12 +390,13 @@ if "pytest" in sys.modules:
         expected_kind: str,
         expected: list[str],
         config_options: Options,
+        app: App,
     ) -> None:
         """Validate parsing of ansible output."""
         lintable = Lintable(file)
         assert lintable.kind == expected_kind
 
-        rules = RulesCollection(options=config_options)
+        rules = RulesCollection(app=app, options=config_options)
         rules.register(ValidateSchemaRule())
         results = Runner(lintable, rules=rules).run()
 
@@ -404,12 +424,13 @@ if "pytest" in sys.modules:
         expected_tag: str,
         count: int,
         config_options: Options,
+        app: App,
     ) -> None:
         """Validate ability to detect schema[moves]."""
         lintable = Lintable(file)
         assert lintable.kind == expected_kind
 
-        rules = RulesCollection(options=config_options)
+        rules = RulesCollection(app=app, options=config_options)
         rules.register(ValidateSchemaRule())
         results = Runner(lintable, rules=rules).run()
 

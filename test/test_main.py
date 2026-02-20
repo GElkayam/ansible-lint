@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from http.client import RemoteDisconnected
+from os.path import abspath
 from pathlib import Path
 
 import pytest
@@ -14,35 +16,42 @@ from pytest_mock import MockerFixture
 
 from ansiblelint.config import get_version_warning, options
 from ansiblelint.constants import RC
+from ansiblelint.loaders import yaml_load_safe
 
 
 @pytest.mark.parametrize(
-    ("expected_warning"),
+    ("in_path"),
     (False, True),
-    ids=("normal", "isolated"),
+    ids=("in", "missing"),
 )
-def test_call_from_outside_venv(expected_warning: bool) -> None:
+def test_call_from_outside_venv(in_path: bool) -> None:
     """Asserts ability to be called w/ or w/o venv activation."""
     git_location = shutil.which("git")
     if not git_location:
         pytest.fail("git not found")
     git_path = Path(git_location).parent
+    py_path = Path(sys.executable).parent.resolve().as_posix()
 
-    if expected_warning:
-        env = {"HOME": str(Path.home()), "PATH": str(git_path)}
+    env = os.environ.copy()
+    env["VIRTUAL_ENV"] = ""
+    env["NO_COLOR"] = "1"
+    if in_path:
+        # VIRTUAL_ENV obliterated here to emulate call from outside a virtual environment
+        env["HOME"] = Path.home().as_posix()
+        env["PATH"] = git_path.as_posix()
     else:
-        env = os.environ.copy()
+        if py_path not in env["PATH"]:
+            env["PATH"] = f"{py_path}:{env['PATH']}"
 
     for v in ("COVERAGE_FILE", "COVERAGE_PROCESS_START"):
         if v in os.environ:
             env[v] = os.environ[v]
 
-    py_path = Path(sys.executable).parent
     # Passing custom env prevents the process from inheriting PATH or other
     # environment variables from the current process, so we emulate being
     # called from outside the venv.
     proc = subprocess.run(
-        [str(py_path / "ansible-lint"), "--version"],
+        [f"{py_path}/ansible-lint", "--version"],
         check=False,
         capture_output=True,
         text=True,
@@ -50,7 +59,7 @@ def test_call_from_outside_venv(expected_warning: bool) -> None:
     )
     assert proc.returncode == 0, proc
     warning_found = "PATH altered to include" in proc.stderr
-    assert warning_found is expected_warning
+    assert warning_found is in_path
 
 
 @pytest.mark.parametrize(
@@ -145,7 +154,57 @@ def test_broken_ansible_cfg() -> None:
         cwd="test/fixtures/broken-ansible.cfg",
     )
     assert proc.returncode == RC.INVALID_CONFIG, proc
-    assert (
-        "Invalid type for configuration option setting: CACHE_PLUGIN_TIMEOUT"
-        in proc.stderr
+    # 2.19 had different errors
+    assert any(
+        x in proc.stderr
+        for x in (
+            "Invalid type for configuration option setting: CACHE_PLUGIN_TIMEOUT",
+            "has an invalid value: Invalid type provided for 'int': 'invalid-value'",
+            "has an invalid value: Invalid value provided for 'integer': 'invalid-value'",
+        )
+    ), proc.stderr
+
+
+def test_list_tags() -> None:
+    """Asserts that we can list tags and that the output is parsable yaml."""
+    result = subprocess.run(
+        ["ansible-lint", "--list-tags"],
+        check=True,
+        capture_output=True,
+        text=True,
     )
+    assert result.returncode == 0
+    data = yaml_load_safe(result.stdout)
+    assert isinstance(data, Mapping)
+    for key, value in data.items():
+        assert isinstance(key, str)
+        assert isinstance(value, list)
+        for item in value:
+            assert isinstance(item, str)
+
+
+def test_ro_venv(tmp_path: Path) -> None:
+    """Tests behavior when the virtual environment is read-only."""
+    tox_work_dir = os.environ.get("TOX_WORK_DIR", ".tox")
+    venv_path = f"{tox_work_dir}/ro"
+    commands = [
+        f"mkdir -p {venv_path}",
+        f"chmod -R a+w {venv_path}",
+        f"rm -rf {venv_path}",
+        f"uv venv --seed --no-project {venv_path}",
+        f"VIRTUAL_ENV={venv_path} uv pip install -q -e .",
+        f"chmod -R a-w {venv_path}",
+        # running with a ro venv and default cwd
+        f"{venv_path}/bin/ansible-lint --version",
+        # running from a read-only cwd:
+        f"cd / && {abspath(venv_path)}/bin/ansible-lint --version",  # noqa: PTH100
+        # running with a ro venv and a custom project path in forced non-online mode, so it will need to install requirements
+        f"{venv_path}/bin/ansible-lint -vv --nocolor --no-offline --project-dir {tmp_path.as_posix()} ./examples/reqs_v2/",
+    ]
+    for cmd in commands:
+        result = subprocess.run(
+            cmd, capture_output=True, shell=True, text=True, check=False
+        )
+        assert result.returncode == 0, (
+            f"Got {result.returncode} running {cmd}\n\tstderr: {result.stderr}\n\tstdout: {result.stdout}"
+        )

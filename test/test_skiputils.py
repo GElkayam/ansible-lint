@@ -15,12 +15,14 @@ from ansiblelint.skip_utils import (
     get_rule_skips_from_line,
     is_nested_task,
 )
+from ansiblelint.utils import Task
 
 if TYPE_CHECKING:
-    from ansible.parsing.yaml.objects import AnsibleBaseYAMLObject
-
     from ansiblelint.rules import RulesCollection
     from ansiblelint.testing import RunFromText
+    from ansiblelint.types import (
+        AnsibleBaseYAMLObject,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
 PLAYBOOK_WITH_NOQA = """\
 ---
@@ -62,6 +64,15 @@ def test_playbook_noqa2(default_text_runner: RunFromText) -> None:
     results = default_text_runner.run_playbook(PLAYBOOK_WITH_NOQA, "test")
     # Should raise error at "SOME_VAR".
     assert len(results) == 1
+
+
+def test_var_noqa(default_text_runner: RunFromText) -> None:
+    """Check that noqa is properly taken into account on vars and tasks."""
+    results = default_text_runner.run(
+        Path("examples/playbooks/vars/noqa_multiline.yml")
+    )
+    # Should raise no error at "SOME_VAR".
+    assert len(results) == 0
 
 
 @pytest.mark.parametrize(
@@ -187,8 +198,7 @@ def test_playbook_noqa2(default_text_runner: RunFromText) -> None:
         ),
     ),
 )
-# type: ignore[no-any-unimported]
-def test_append_skipped_rules(
+def test_append_skipped_rules(  # type: ignore[no-any-unimported]
     lintable: Lintable,
     yaml: AnsibleBaseYAMLObject,
     expected_form: AnsibleBaseYAMLObject,
@@ -235,7 +245,7 @@ def test_append_skipped_rules(
 )
 def test_is_nested_task(task: dict[str, Any], expected: bool) -> None:
     """Test is_nested_task() returns expected bool."""
-    assert is_nested_task(task) == expected
+    assert is_nested_task(Task(task)) == expected
 
 
 def test_capture_warning_outdated_tag(
